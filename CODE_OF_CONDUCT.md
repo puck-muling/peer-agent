@@ -59,7 +59,8 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders via the repository issue tracker or private contact.
+reported to the community leaders confidentially via GitHub Security Advisories at
+https://github.com/puck-muling/peer-agent/security/advisories or via private repository reports.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

@@ -40,7 +40,7 @@ AI 代理之间不依赖复杂的 RPC 守护进程或常驻 WebSocket，而是�
    * 发起端将任务描述与底层证据路径写入工作区的 `.peer-review/requests/<timestamp>-<agent>-<kind>.md`。
 2. **异步拉起（Spawn Phase）**：
    * `peer ask <agent> <kind>` 读取请求，识别只读或可写意图；
-   * 后台拉起无头 CLI 进程（Codex 注入 `--sandbox read-only`，Claude 注入 `--permission-overrides` 剥离写工具）；
+   * 后台拉起无头 CLI 进程（Codex 强制注入 `--sandbox read-only`，Claude 注入 `--tools` 明确剔除 `Edit`/`Write` 工具并开启只读沙箱）；
    * 为当前任务分配唯一的 `run_id`，并记录元数据到 `.peer-review/runs/<run_id>/meta.json`。
 3. **轮询等待与回收（Wait Phase）**：
    * `peer wait <run_id>` 监听进程状态并捕获 Stdio 输出流；
@@ -63,7 +63,7 @@ env["PEER_DEPTH"] = str(curr_depth + 1)
 if is_nested_depth(os.environ.get("PEER_DEPTH")):
     raise PeerError("检测到嵌套调用：禁止在任务进程中再次调用 peer ask，防止递归死循环。")
 ```
-任何第二层代理如果尝试再次调起对等模型，会被操作系统级环境变量检查物理阻断，退出码为 `2`。
+任何第二层代理如果尝试再次调起对等模型，会被进程环境变量深度门禁检查拦截阻断，退出码为 `2`。
 
 ---
 

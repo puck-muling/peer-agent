@@ -57,7 +57,7 @@ cd peer-agent
 ```
 
 > [!NOTE]
-> 安装程序会将核心程序安装到 `~/.local/bin/peer`，并将对应斜杠命令注册到 `~/.claude`、`~/.codex` 和 `~/.gemini`。  
+> **推荐使用 `./install.sh` 进行一键安装**：脚本会自动将核心二进制安装到 `~/.local/bin/peer`，分发审阅模板到 `~/.peer-review/templates`，并将对应斜杠命令注册到 `~/.claude`、`~/.codex` 和 `~/.gemini`。  
 > 请确保 `~/.local/bin` 已加入系统的 `PATH` 环境变量中。
 
 ### 3. 环境与登录自检
@@ -118,7 +118,7 @@ PeerAgent 在设计之初就将安全与稳定性放在首位，通过四重安�
 1. **严格只读沙箱（Read-Only Enforcement）**：  
    审阅任务（`review`、`plan`、`advice`）启动时强制锁定只读模式（Codex 注入 `--sandbox read-only`，Claude 禁用文件修改工具并切入沙箱环境）。物理杜绝审阅过程中误改任何工程文件。
 2. **防套娃死循环染色（`PEER_DEPTH` Anti-Loop）**：  
-   子进程自动注入调用深度环境变量。若检测到嵌套互调（例如 Agent A 调起 Agent B，Agent B 试图再次调起 Agent A），操作系统级门禁立即物理阻断退出，彻底杜绝无限循环消耗。
+   子进程自动注入调用深度环境变量。若检测到嵌套互调（例如 Agent A 调起 Agent B，Agent B 试图再次调起 Agent A），环境变量深度门禁立即阻断退出，彻底杜绝无限循环消耗。
 3. **安全熔断停机锁（STOP Circuit Breaker）**：  
    精准识别封禁等致命特征。一旦捕获致命异常，立即写入停机锁文件（`~/.peer-review/STOP`），物理阻断后续一切自动调用。**严禁任何 AI 代理自动恢复删除**，必须由人类排查确认后手动解除。（注：普通 401 凭证失效仅提示重新登录，不写停机锁）。
 4. **工作区快照与改动比对（Snapshot Diff）**：  
@@ -188,7 +188,7 @@ peer stats
 * AI 负责出具初版方案 (`plan`)；
 * 另一方模型核查代码真实性并提出独立审阅建议 (`review`)；
 * 用户审阅汇总意见并拍板最终方案；
-* 执行 `peer freeze <方案.md> --cwd .` 计算并固化全文 SHA-256 内容指纹，确保后续执行严格限定在已冻结的范围之内。
+* 执行 `peer freeze <方案.md> --cwd .` 计算并固化全文 SHA-256 内容指纹并生成交接语，确保后续执行严格限定在已冻结的范围之内（支持独立指纹固化模式；若在企业内配合私有审阅插件，还可通过 `--review-receipt <目录>` 校验终审签名回执）。
 </details>
 
 <details>

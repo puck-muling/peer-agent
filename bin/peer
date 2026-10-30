@@ -1759,7 +1759,17 @@ def cmd_freeze(a):
     with open(plan, "rb") as f:
         data = f.read()
     h = hashlib.sha256(data).hexdigest()
-    review = check_review_receipt(a.review_receipt, h)
+    if a.review_receipt:
+        review = check_review_receipt(a.review_receipt, h)
+        receipt_line = "终审回执：%s（review_id %s）\n" % (review["review_receipt"], review["review_id"])
+    else:
+        review = {
+            "review_receipt": "(standalone-mode)",
+            "review_id": "none",
+            "submission_id": "standalone-" + ts(),
+            "commit_sha256": "none",
+        }
+        receipt_line = "冻结模式：独立指纹固化（无需外部回执插件）\n"
     d, fn = os.path.split(plan)
     stem = re.sub(r"\.md$", "", fn)
     n = 1
@@ -1776,11 +1786,11 @@ def cmd_freeze(a):
         "这份方案已经由我终审并冻结。若用户授权实施，请严格按照它执行：\n"
         "%s\n"
         "内容指纹（SHA-256）：%s\n"
-        "终审回执：%s（review_id %s）\n"
+        "%s"
         "开始前先计算这个文件的 SHA-256，和上面不一致就停下告诉我。\n"
         "执行范围以方案为准；方案里没写的删除、发布、付费操作一律不做；需要偏离方案时先停下来问我。\n"
         "完成后把执行记录（改了哪些文件、做了哪些验证、遗留问题）追加到原方案文档末尾：\n%s\n"
-        % (frozen, h, review["review_receipt"], review["review_id"], plan))
+        % (frozen, h, receipt_line, plan))
     hp = os.path.join(d, "%s_冻结v%03d_交接语.txt" % (stem, n))
     with open(hp, "w", encoding="utf-8") as f:
         f.write(handoff)
@@ -1854,6 +1864,7 @@ def cmd_doctor(a):
     if active_stops:
         for p, label, reason in active_stops:
             print("- %s熔断停机锁：%s（⚠️ 熔断中！原因：%s；严禁 Agent 自动删除，须由用户人工核实）" % (label, p, reason or "已锁定"))
+        sys.exit(3)
     else:
         print("- 全局熔断停机锁：未触发（安全正常）")
     if os.path.exists(IMAGE_COOLDOWN_PATH):
@@ -1981,7 +1992,7 @@ def main():
     w.add_argument("--timeout", type=int, default=540)
     s = sp.add_parser("status"); s.add_argument("run_id", nargs="?"); s.add_argument("--cwd", required=True)
     f = sp.add_parser("freeze"); f.add_argument("plan"); f.add_argument("--cwd", required=True); f.add_argument("--quote", default="")
-    f.add_argument("--review-receipt", default="", help="终审回执的事务目录（必填；老大审阅技能落档的 transactions/<submission_id>/）")
+    f.add_argument("--review-receipt", default="", help="终审回执的事务目录（可选；若配置了配套审阅插件则传入 transactions/<submission_id>/，留空则以独立指纹模式固化）")
     v = sp.add_parser("verify"); v.add_argument("frozen")
     sf = sp.add_parser("since-freeze"); sf.add_argument("frozen")
     sp.add_parser("stats")

@@ -57,7 +57,7 @@ cd peer-agent
 ```
 
 > [!NOTE]
-> The installer installs the core binary into `~/.local/bin/peer` and registers slash commands under `~/.claude`, `~/.codex`, and `~/.gemini`.  
+> **Recommended installation method is `./install.sh`**: The script installs the core binary to `~/.local/bin/peer`, distributes review templates to `~/.peer-review/templates`, and registers slash commands under `~/.claude`, `~/.codex`, and `~/.gemini`.  
 > Please ensure `~/.local/bin` is in your `PATH`.
 
 ### 3. Verification
@@ -118,7 +118,7 @@ PeerAgent was built from the ground up with defensive engineering principles:
 1. **Strict Read-Only Enforcement**:  
    Review tasks (`review`, `plan`, `advice`) are locked into read-only sandboxes (Codex runs with `--sandbox read-only`; Claude runs with modification tools stripped and sandboxed Bash). Modifying project files is physically prevented.
 2. **Anti-Recursion Taint Tracking (`PEER_DEPTH`)**:  
-   Spawned processes inherit depth environment variables. If Agent A calls Agent B, and Agent B attempts to call Agent A back, invocation is physically halted at the OS level, eliminating infinite looping.
+   Spawned processes inherit depth environment variables. If Agent A calls Agent B, and Agent B attempts to call Agent A back, invocation is halted at the process entry level, eliminating runaway loops.
 3. **Emergency STOP Circuit Breaker**:  
    Scans error streams for account deactivation or suspension patterns. If fatal errors occur, a physical lock file (`~/.peer-review/STOP`) is written to freeze further automated calls. **AI agents are strictly forbidden from auto-recovering or deleting this lock**; human operator inspection is required. *(Note: Standard 401 token expirations prompt re-authentication and do not lock the system).*
 4. **Workspace Snapshot & Diff Tracking**:  
@@ -179,7 +179,7 @@ For high-stakes refactoring, PeerAgent follows the **"Human as Host"** principle
 * One agent drafts an initial proposal (`plan`);
 * The second agent independently verifies code premises and provides review feedback (`review`);
 * The user reviews all points and selects actions;
-* Running `peer freeze <plan.md> --cwd .` computes and locks the SHA-256 fingerprint, guaranteeing that subsequent execution stays strictly within the approved boundary.
+* Running `peer freeze <plan.md> --cwd .` computes and locks the SHA-256 fingerprint and creates handoff text, guaranteeing that subsequent execution stays strictly within the approved boundary (supports standalone freeze mode; in enterprise setups, `--review-receipt <dir>` can be supplied to verify approval signatures).
 </details>
 
 <details>

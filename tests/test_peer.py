@@ -305,6 +305,35 @@ class TestPeerExtended(unittest.TestCase):
         self.assertIn('packages = []', content)
         self.assertIn('script-files = ["bin/peer"]', content)
 
+    def test_standalone_freeze_and_verify(self):
+        """测试无需外部回执的独立方案冻结与指纹校验功能"""
+        proj = os.path.join(self.test_dir, "freeze_proj")
+        os.makedirs(proj, exist_ok=True)
+        plan_file = os.path.join(proj, "architecture_plan.md")
+        with open(plan_file, "w", encoding="utf-8") as f:
+            f.write("# Plan V1\nLine 1\nLine 2\n")
+
+        class FreezeArgs:
+            cwd = proj
+            plan = plan_file
+            quote = "Approved by human test"
+            review_receipt = ""
+
+        # 执行独立冻结
+        peer.cmd_freeze(FreezeArgs)
+
+        # 检查冻结文件与交接语生成
+        frozen_file = os.path.join(proj, "architecture_plan_冻结v001.md")
+        handoff_file = os.path.join(proj, "architecture_plan_冻结v001_交接语.txt")
+        self.assertTrue(os.path.exists(frozen_file))
+        self.assertTrue(os.path.exists(handoff_file))
+
+        # 校验 verify 命令
+        class VerifyArgs:
+            frozen = frozen_file
+
+        peer.cmd_verify(VerifyArgs)
+
 
 if __name__ == "__main__":
     unittest.main()

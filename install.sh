@@ -2,7 +2,7 @@
 # PeerAgent 一键安装脚本
 # 支持 macOS 与 Linux (Ubuntu/Debian/Fedora/Arch)
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PEER_HOME="${PEER_HOME:-$HOME/.peer-review}"
@@ -26,7 +26,7 @@ usage() {
   echo "选项:"
   echo "  --link       使用软链接安装（适合开发者，修改代码立即生效）"
   echo "  --copy       使用文件复制安装（默认方式）"
-  echo "  --uninstall  卸载 PeerAgent 及相关技能配置"
+  echo "  --uninstall  卸载 PeerAgent 及相关技能配置（若有安装前备份将自动还原）"
   echo "  -h, --help   显示本帮助信息"
   exit 0
 }
@@ -42,19 +42,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+safe_uninstall_skill() {
+  local dst="$1"
+  if [ -L "$dst" ] || [ -f "$dst" ]; then
+    rm -f "$dst"
+    local parent
+    parent="$(dirname "$dst")"
+    local base
+    base="$(basename "$dst")"
+    local latest_bak
+    latest_bak="$(ls -t "${parent}/${base}".bak_* 2>/dev/null | head -n 1 || true)"
+    if [ -n "$latest_bak" ] && [ -f "$latest_bak" ]; then
+      echo "   还原备份技能: $(basename "$latest_bak") -> $base"
+      mv "$latest_bak" "$dst"
+    fi
+  fi
+  rmdir "$(dirname "$dst")" 2>/dev/null || true
+}
+
 uninstall_peer() {
   echo "正在卸载 PeerAgent..."
   rm -f "$LOCAL_BIN/peer"
   rm -f "$PEER_HOME/bin/peer"
-  rm -f "$HOME/.gemini/config/skills/codex/SKILL.md"
-  rm -f "$HOME/.gemini/config/skills/claude/SKILL.md"
-  rm -f "$HOME/.claude/skills/codex/SKILL.md"
-  rm -f "$HOME/.codex/skills/claude/SKILL.md"
-  # 仅在目录为空时清理
-  rmdir "$HOME/.gemini/config/skills/codex" 2>/dev/null || true
-  rmdir "$HOME/.gemini/config/skills/claude" 2>/dev/null || true
-  rmdir "$HOME/.claude/skills/codex" 2>/dev/null || true
-  rmdir "$HOME/.codex/skills/claude" 2>/dev/null || true
+  safe_uninstall_skill "$HOME/.gemini/config/skills/codex/SKILL.md"
+  safe_uninstall_skill "$HOME/.gemini/config/skills/claude/SKILL.md"
+  safe_uninstall_skill "$HOME/.claude/skills/codex/SKILL.md"
+  safe_uninstall_skill "$HOME/.codex/skills/claude/SKILL.md"
   echo "✅ 已移除技能链接与执行程序。保留 ~/.peer-review 历史数据。"
   exit 0
 }
@@ -63,7 +76,9 @@ safe_install_skill() {
   local src="$1"
   local dst="$2"
   mkdir -p "$(dirname "$dst")"
-  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+  if [ -L "$dst" ]; then
+    rm -f "$dst"
+  elif [ -e "$dst" ]; then
     if ! cmp -s "$src" "$dst" 2>/dev/null; then
       local bak="${dst}.bak_$(date +%Y%m%d%H%M%S)"
       echo "      检测到已有技能文件，已备份至: $bak"
