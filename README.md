@@ -3,11 +3,12 @@
 > **Get a second model to review your code — without echo chambers or extra token bills.**  
 > *A lightweight, subscription-native, decentralized multi-agent mesh for developers.*
 
+[![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/puck-muling/peer-agent)
 
-[中文文档 (README_CN.md)](./README_CN.md) | [Security Model (SECURITY.md)](./SECURITY.md) | [Architecture Guide (architecture.md)](./docs/architecture.md)
+[中文文档 (README_CN.md)](./README_CN.md) | [Security Model (SECURITY.md)](./SECURITY.md) | [Architecture (architecture.md)](./docs/architecture.md) | [Contributing (CONTRIBUTING.md)](./CONTRIBUTING.md) | [Changelog (CHANGELOG.md)](./CHANGELOG.md)
 
 ---
 

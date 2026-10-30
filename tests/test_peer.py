@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""PeerAgent 核心单元测试集"""
+"""PeerAgent Comprehensive Unit Test Suite"""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,7 @@ class TestPeerCore(unittest.TestCase):
         self.assertNotIn("alice@example.com", scrubbed)
         self.assertNotIn("bob.smith+dev@company.org", scrubbed)
         self.assertIn("<邮箱已隐藏>", scrubbed)
+        self.assertEqual(peer.scrub(None), "")
 
     def test_fatal_banned_patterns(self):
         """测试致命封号与风控停机检测正则"""
@@ -127,6 +129,165 @@ class TestPeerCore(unittest.TestCase):
         for prompt, expected in test_cases:
             res = parse_intent(prompt)
             self.assertEqual(res, expected, f"Failed on prompt: '{prompt}', got: '{res}' instead of '{expected}'")
+
+
+class TestPeerExtended(unittest.TestCase):
+    """扩展测试用例：覆盖快照对比、项目安全边界、配置读写、用量统计及 CLI 烟雾测试"""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_project_root_security(self):
+        """测试根目录、家目录及桌面目录安全校验"""
+        # 允许合法子目录
+        sub = os.path.join(self.test_dir, "my_project")
+        os.makedirs(sub, exist_ok=True)
+        self.assertEqual(peer.project_root(sub), os.path.realpath(sub))
+
+        # 拒绝非法路径
+        with self.assertRaises(SystemExit):
+            peer.project_root("/")
+        with self.assertRaises(SystemExit):
+            peer.project_root(peer.HOME)
+        desktop = os.path.join(peer.HOME, "Desktop")
+        if os.path.exists(desktop):
+            with self.assertRaises(SystemExit):
+                peer.project_root(desktop)
+
+    def test_run_id_regex_validation(self):
+        """测试 run_id 格式校验，防止路径穿越"""
+        valid_ids = [
+            "20261030-111801-codex-review",
+            "20261030-111806-claude-plan",
+            "20261030-120000-codex-exec-1",
+        ]
+        for vid in valid_ids:
+            self.assertIsNotNone(re.fullmatch(r"[0-9]{8}-[0-9]{6}-(codex|claude)-[a-z]+(-[0-9]+)?", vid))
+
+        invalid_ids = [
+            "../../etc/passwd",
+            "20261030-111801-gemini-review",
+            "invalid_id",
+            "",
+            "20261030-111801-codex-review;rm -rf /",
+        ]
+        for inv in invalid_ids:
+            self.assertIsNone(re.fullmatch(r"[0-9]{8}-[0-9]{6}-(codex|claude)-[a-z]+(-[0-9]+)?", inv))
+
+    def test_is_text_detection(self):
+        """测试文本与二进制文件识别"""
+        text_file = os.path.join(self.test_dir, "hello.txt")
+        with open(text_file, "w", encoding="utf-8") as f:
+            f.write("Hello world!\nLine 2\n")
+        self.assertTrue(peer.is_text(text_file, os.path.getsize(text_file)))
+
+        bin_file = os.path.join(self.test_dir, "binary.dat")
+        with open(bin_file, "wb") as f:
+            f.write(b"\x00\x01\x02\x03\xff")
+        self.assertFalse(peer.is_text(bin_file, os.path.getsize(bin_file)))
+
+        # 超过上限视为非文本
+        self.assertFalse(peer.is_text(text_file, peer.COPY_MAX + 1))
+
+    def test_snapshot_and_compare_lifecycle(self):
+        """测试项目快照与改动对比，确保敏感文件掩码及增删改正确检测"""
+        proj = os.path.join(self.test_dir, "project")
+        os.makedirs(proj, exist_ok=True)
+
+        # 创建普通文件与敏感文件
+        f1 = os.path.join(proj, "main.py")
+        with open(f1, "w", encoding="utf-8") as f:
+            f.write("print('v1')\n")
+
+        f_env = os.path.join(proj, ".env")
+        with open(f_env, "w", encoding="utf-8") as f:
+            f.write("SECRET_KEY=supersecret123\n")
+
+        f_del = os.path.join(proj, "to_delete.txt")
+        with open(f_del, "w", encoding="utf-8") as f:
+            f.write("delete me\n")
+
+        snap_dest = os.path.join(self.test_dir, "snap")
+        manifest = peer.snapshot(proj, snap_dest)
+        self.assertTrue(os.path.exists(os.path.join(snap_dest, "manifest.json")))
+        self.assertTrue(manifest["entries"][".env"].get("secret"))
+
+        # 修改 main.py，删除 to_delete.txt，新增 new.txt，修改 .env
+        with open(f1, "w", encoding="utf-8") as f:
+            f.write("print('v2')\n")
+        os.remove(f_del)
+        f_new = os.path.join(proj, "new.txt")
+        with open(f_new, "w", encoding="utf-8") as f:
+            f.write("new content\n")
+        with open(f_env, "w", encoding="utf-8") as f:
+            f.write("SECRET_KEY=changedsecret\n")
+
+        diff_res = peer.compare(snap_dest, proj)
+        self.assertIn("main.py", diff_res["modified"])
+        self.assertIn(".env", diff_res["modified"])
+        self.assertIn("to_delete.txt", diff_res["deleted"])
+        self.assertIn("new.txt", diff_res["added"])
+
+        # 确保敏感文件的具体内容不暴露在 diff 文本中
+        self.assertNotIn("supersecret123", diff_res["diff"])
+        self.assertNotIn("changedsecret", diff_res["diff"])
+        self.assertTrue(any(".env" in item for item in diff_res["no_diff"]))
+
+    def test_fmt_tokens_and_usage(self):
+        """测试 Token 用量格式化"""
+        self.assertEqual(peer.fmt_tokens(0), "0")
+        self.assertEqual(peer.fmt_tokens(950), "950")
+        self.assertEqual(peer.fmt_tokens(1000), "1,000")
+        self.assertEqual(peer.fmt_tokens(10000), "1 万")
+        self.assertEqual(peer.fmt_tokens(25000), "2.5 万")
+        self.assertEqual(peer.fmt_tokens(None), "0")
+        self.assertEqual(peer.fmt_tokens("invalid"), "?")
+
+        usage = {"input": 12000, "cached": 4000, "output": 800, "thinking": 200, "cost_usd": 0.05}
+        desc = peer.describe_usage(usage, auth_category="subscription")
+        self.assertIn("读入 1.2 万", desc)
+        self.assertIn("缓存 4,000", desc)
+        self.assertIn("订阅不另收费", desc)
+
+    def test_config_load_and_atomic_save(self):
+        """测试配置文件读取默认值与原子写入"""
+        cfg_file = os.path.join(self.test_dir, "config.json")
+        orig_cfg_path = peer.CONFIG_PATH
+        try:
+            peer.CONFIG_PATH = cfg_file
+            # 不存在时返回默认配置
+            cfg = peer.load_config()
+            self.assertEqual(cfg["bins"]["claude"], "claude")
+
+            # 修改并保存
+            cfg["bins"]["claude"] = "/usr/local/bin/claude"
+            peer.save_config(cfg)
+            self.assertTrue(os.path.exists(cfg_file))
+
+            # 重新读取验证
+            loaded = peer.load_config()
+            self.assertEqual(loaded["bins"]["claude"], "/usr/local/bin/claude")
+        finally:
+            peer.CONFIG_PATH = orig_cfg_path
+
+    def test_cli_smoke(self):
+        """测试 CLI 命令行入口响应 --help 与 stats"""
+        bin_path = os.path.join(REPO_DIR, "bin", "peer")
+
+        # --help
+        res = subprocess.run([sys.executable, bin_path, "--help"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("peer", res.stdout)
+        self.assertIn("doctor", res.stdout)
+        self.assertIn("ask", res.stdout)
+
+        # stats
+        res_stats = subprocess.run([sys.executable, bin_path, "stats"], capture_output=True, text=True)
+        self.assertEqual(res_stats.returncode, 0)
+        self.assertIn("今天", res_stats.stdout)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,30 @@ __pycache__/
 env/
 venv/
 .venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
 
 # PeerAgent Runtime
 .peer-review/
@@ -16,6 +40,12 @@ logs/
 last_image_time.json
 STOP*
 config.json
+*.tmp
+
+# Tool Caches & Local States
+.claude/
+.codex/
+.gemini/
 
 # OS and Editors
 .DS_Store
@@ -25,7 +55,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# Local notes / promotional drafts
+# Local notes & promotional drafts
 *TWITTER*
 *twitter*
 drafts/
+*.local.md
+
