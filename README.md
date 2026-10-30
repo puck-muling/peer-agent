@@ -59,7 +59,7 @@ graph TD
 ### One-Line Installation
 
 ```bash
-git clone https://github.com/your-username/peer-agent.git
+git clone https://github.com/shixiaofei-sunny/peer-agent.git
 cd peer-agent
 ./install.sh
 ```
@@ -113,6 +113,75 @@ PeerAgent follows the **"Human as the Host"** doctrine. AI agents propose, inspe
 5. Freeze Hash    ──> peer freeze <plan.md> (Calculates SHA-256 fingerprint)
 6. Execute        ──> peer verify & peer ask <agent> exec (Strictly within frozen scope)
 ```
+
+---
+
+## ⚙️ Configuration & Direct CLI
+
+PeerAgent stores user settings in `~/.peer-review/config.json`. A default template is generated on install:
+
+```json
+{
+  "bins": {
+    "claude": "claude",
+    "codex": "codex"
+  },
+  "models": {
+    "claude": "",
+    "codex": ""
+  },
+  "efforts": {
+    "claude": "",
+    "codex": "high"
+  },
+  "service_tiers": {
+    "codex": "default"
+  },
+  "follow_app_settings": true,
+  "approved_auth": {
+    "claude": "subscription",
+    "codex": "subscription"
+  },
+  "timeout_minutes": {
+    "read": 30,
+    "write": 60
+  }
+}
+```
+
+You can also use the `peer` CLI directly from your terminal:
+```bash
+# System diagnostic & auth check
+peer doctor
+
+# Launch an asynchronous read-only review
+peer ask codex review --request ./task.md --cwd .
+
+# Wait for completion & view diff
+peer wait <RUN_ID> --cwd .
+
+# View daily call statistics and token volume
+peer stats
+```
+
+---
+
+## ❓ Frequently Asked Questions (FAQ)
+
+<details>
+<summary><b>1. Does PeerAgent charge my OpenAI / Anthropic API keys?</b></summary>
+No. PeerAgent executes the official local CLIs (`codex`, `claude`) using your existing interactive subscription logins (ChatGPT Plus/Team, Claude Pro/Team). If you prefer using pay-as-you-go API keys, you can configure them, but subscriptions are supported out of the box.
+</details>
+
+<details>
+<summary><b>2. What happens if an agent triggers a rate limit or account issue?</b></summary>
+If fatal account issues (such as suspension warnings) are detected, PeerAgent halts immediately and drops a physical `STOP` lock file in `~/.peer-review/STOP`. AI agents are strictly blocked from deleting this lock file; only a human operator can verify the account and remove the lock.
+</details>
+
+<details>
+<summary><b>3. Why is native Windows unsupported?</b></summary>
+PeerAgent relies on POSIX-compliant process group signaling (`os.killpg`) and Unix advisory file locking (`fcntl.flock`) for cross-process concurrency safety. Windows users are strongly encouraged to run inside **WSL2** (Windows Subsystem for Linux).
+</details>
 
 ---
 

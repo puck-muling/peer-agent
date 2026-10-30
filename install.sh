@@ -45,11 +45,36 @@ done
 uninstall_peer() {
   echo "正在卸载 PeerAgent..."
   rm -f "$LOCAL_BIN/peer"
-  rm -rf "$HOME/.gemini/config/skills/codex" "$HOME/.gemini/config/skills/claude"
-  rm -rf "$HOME/.claude/skills/codex"
-  rm -rf "$HOME/.codex/skills/claude"
+  rm -f "$PEER_HOME/bin/peer"
+  rm -f "$HOME/.gemini/config/skills/codex/SKILL.md"
+  rm -f "$HOME/.gemini/config/skills/claude/SKILL.md"
+  rm -f "$HOME/.claude/skills/codex/SKILL.md"
+  rm -f "$HOME/.codex/skills/claude/SKILL.md"
+  # 仅在目录为空时清理
+  rmdir "$HOME/.gemini/config/skills/codex" 2>/dev/null || true
+  rmdir "$HOME/.gemini/config/skills/claude" 2>/dev/null || true
+  rmdir "$HOME/.claude/skills/codex" 2>/dev/null || true
+  rmdir "$HOME/.codex/skills/claude" 2>/dev/null || true
   echo "✅ 已移除技能链接与执行程序。保留 ~/.peer-review 历史数据。"
   exit 0
+}
+
+safe_install_skill() {
+  local src="$1"
+  local dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    if ! cmp -s "$src" "$dst" 2>/dev/null; then
+      local bak="${dst}.bak_$(date +%Y%m%d%H%M%S)"
+      echo "      检测到已有技能文件，已备份至: $bak"
+      mv "$dst" "$bak"
+    fi
+  fi
+  if [ "$MODE" = "link" ]; then
+    ln -sf "$src" "$dst"
+  else
+    cp -f "$src" "$dst"
+  fi
 }
 
 if [ "$MODE" = "uninstall" ]; then
@@ -65,7 +90,12 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
-echo "   Python 版本: $PY_VER"
+PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
+if [ "$PY_CHECK" != "1" ]; then
+  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: $PY_VER）。请先升级 Python。" >&2
+  exit 1
+fi
+echo "   Python 版本: $PY_VER (符合 >= 3.10 要求)"
 
 if command -v claude >/dev/null 2>&1; then
   echo "   Claude CLI: 已安装 ($(claude --version 2>/dev/null || echo 'OK'))"
@@ -106,32 +136,16 @@ fi
 echo "==> 3. 安装三端 Agent 技能..."
 
 # A. Antigravity Skills
-mkdir -p "$HOME/.gemini/config/skills/codex" "$HOME/.gemini/config/skills/claude"
-if [ "$MODE" = "link" ]; then
-  ln -sf "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
-  ln -sf "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
-else
-  cp -f "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
-  cp -f "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
-fi
+safe_install_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
+safe_install_skill "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
 echo "   [Antigravity] 已安装 /codex 和 /claude 技能。"
 
 # B. Claude Code Skill
-mkdir -p "$HOME/.claude/skills/codex"
-if [ "$MODE" = "link" ]; then
-  ln -sf "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
-else
-  cp -f "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
-fi
+safe_install_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
 echo "   [Claude Code] 已安装 /codex 技能。"
 
 # C. Codex Skill
-mkdir -p "$HOME/.codex/skills/claude"
-if [ "$MODE" = "link" ]; then
-  ln -sf "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
-else
-  cp -f "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
-fi
+safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
 echo "   [Codex CLI]   已安装 /claude 技能。"
 
 echo "==> 4. 运行自检验证..."

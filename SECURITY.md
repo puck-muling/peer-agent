@@ -21,17 +21,18 @@ PeerAgent strictly categorizes tasks into two permission tiers:
 
 ---
 
-## 2. Emergency STOP Circuit Breaker
+## 2. Emergency STOP Circuit Breaker & Auth Guard
 
-To protect your accounts against automated lockouts, IP bans, or runaway tasks, PeerAgent includes a physical circuit breaker:
-* **Detection**: Scans stderr and execution logs for critical patterns:
-  - Account suspension / deactivation
-  - Severe authentication errors (401 token revoked, refresh token invalidated)
-* **Action**: Immediately writes physical lock files:
-  - `$PEER_HOME/STOP` (Global halt)
-  - `$PEER_HOME/STOP-codex` (Codex-specific halt)
-  - `$PEER_HOME/STOP-claude` (Claude-specific halt)
-* **Zero AI Bypass Rule**: **No AI agent is ever allowed to delete or circumvent a STOP lock.** If triggered, human operator intervention is strictly required to verify the account status and remove the lock manually.
+To protect your accounts against automated lockouts, IP bans, or runaway tasks, PeerAgent enforces two layers of defense:
+* **Account Suspension Defense (`banned`)**:
+  - Scans error outputs for patterns indicating account deactivation, suspension, or organization bans (`FATAL_BANNED_PATTERNS`).
+  - Immediately writes a physical lock file (`$PEER_HOME/STOP` or `STOP-<agent>`).
+  - **Zero AI Bypass Rule**: **No AI agent is ever allowed to delete or circumvent a STOP lock.** If triggered, human operator intervention is strictly required to verify the account status and remove the lock manually.
+* **Authentication Expiration (`relogin`)**:
+  - Detects 401 Unauthorized, token revocation, or refresh token invalidation (`AUTH_RELOGIN_PATTERNS`).
+  - Halts the task immediately without dropping a permanent lock, and prompts the user to re-authenticate manually in the respective CLI (`claude login` or `codex`).
+* **Pre-Flight Lock Check**:
+  - Before spawning any agent process or executing queued jobs, PeerAgent checks for the presence of active STOP locks and refuses execution if found.
 
 ---
 

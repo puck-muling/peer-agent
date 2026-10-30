@@ -57,39 +57,52 @@ cat << 'PEER_EOF' > "$REQ_FILE"
 $ARGUMENTS
 PEER_EOF
 
-   # 5. 意图识别分发（显式子命令优先 -> 严格只读否定词优先 -> 复合写入执行 -> 生图 -> 方案与建议 -> 默认只读）
-   RAW_TASK=$(echo "$ARGUMENTS" | sed -e 's/^[[:space:]]*//')
-   FIRST_WORD=$(echo "$RAW_TASK" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+   # 5. 安全提取意图与任务原文（通过 Python 安全读取文件，完全免疫 shell 命令注入）
+   PARSED_JSON=$(python3 -c '
+import sys, json
 
-   if [ "$FIRST_WORD" = "exec" ]; then
-     KIND="exec"
-   elif [ "$FIRST_WORD" = "review" ]; then
-     KIND="review"
-   elif [ "$FIRST_WORD" = "plan" ]; then
-     KIND="plan"
-   elif [ "$FIRST_WORD" = "advice" ]; then
-     KIND="advice"
-   elif [ "$FIRST_WORD" = "image" ]; then
-     KIND="image"
-   elif echo "$RAW_TASK" | grep -qE "只读|仅审阅|仅查看|仅分析|仅排查|不要改|不要修改|无需修改|不用修改|不得修改|严禁修改|禁止修改|请勿修改|不修改|只查|只看"; then
-     KIND="review"
-   elif echo "$RAW_TASK" | grep -qE "出方案|出计划|设计方案|怎么做|出个计划"; then
-     KIND="plan"
-   elif echo "$RAW_TASK" | grep -qE "生图|生成图片|生成.*图|做张图|出张图|画一张|做一张|出海报|做立绘|画立绘"; then
-     KIND="image"
-   elif echo "$RAW_TASK" | grep -qE "修改|实现|编辑|写入|创建|新建|修复|重构|编写|修掉|改一下"; then
-     KIND="exec"
-   elif echo "$RAW_TASK" | grep -qE "为什么|怎么看|分析一下|给个建议|给个结论|结论|建议"; then
-     KIND="advice"
-   else
-     KIND="review"
-   fi
+req_file = sys.argv[1]
+with open(req_file, "r", encoding="utf-8", errors="replace") as f:
+    content = f.read()
+
+lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
+raw = " ".join(lines)
+first_word = raw.split()[0].lower() if raw.split() else ""
+
+# 优先级 1: 严格只读与否定词优先（防止“不要修改”、“帮我评估是否需要修改”被误判为 exec）
+is_strictly_readonly = any(w in raw for w in [
+    "只读", "仅审阅", "仅查看", "仅分析", "仅排查", "不要改", "不要修改",
+    "无需修改", "不用修改", "不得修改", "严禁修改", "禁止修改", "请勿修改",
+    "不修改", "只查", "只看", "评估", "是否需要", "是否应当"
+])
+
+if first_word in ("exec", "review", "plan", "advice", "image"):
+    # 显式子命令除 exec 外直接匹配；若写了 exec 但紧接着有否定词，安全降级为 review
+    kind = "review" if (first_word == "exec" and is_strictly_readonly) else first_word
+elif is_strictly_readonly:
+    kind = "review"
+elif any(w in raw for w in ["出方案", "出计划", "设计方案", "怎么做", "出个计划", "重构方案", "方案", "计划"]):
+    kind = "plan"
+elif any(w in raw for w in ["生图", "生成图片", "出图", "画一张", "做一张", "出海报", "做立绘"]):
+    kind = "image"
+elif any(w in raw for w in ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "修掉", "改一下"]):
+    kind = "exec"
+elif any(w in raw for w in ["为什么", "怎么看", "分析一下", "给个建议", "给个结论", "结论", "建议"]):
+    kind = "advice"
+else:
+    kind = "review"
+
+print(json.dumps({"kind": kind, "quote": raw[:300]}, ensure_ascii=False))
+' "$REQ_FILE")
+
+   KIND=$(python3 -c "import json, sys; print(json.loads(sys.argv[1])['kind'])" "$PARSED_JSON")
+   QUOTE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1])['quote'])" "$PARSED_JSON")
 
    # 6. 后台发起调用（绝不导出 PEER_DEPTH=1，由 peer child_env 自动安全注入）
    if [ "$KIND" = "review" ] || [ "$KIND" = "plan" ] || [ "$KIND" = "advice" ]; then
      RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --caller "Claude Code")
    else
-     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --quote "$RAW_TASK" --caller "Claude Code")
+     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --quote "$QUOTE" --caller "Claude Code")
    fi
    ASK_STATUS=$?
    echo "$RUN_OUT"

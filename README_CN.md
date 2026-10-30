@@ -74,7 +74,7 @@
 ### 一键安装
 
 ```bash
-git clone https://github.com/your-username/peer-agent.git
+git clone https://github.com/shixiaofei-sunny/peer-agent.git
 cd peer-agent
 ./install.sh
 ```
@@ -131,6 +131,46 @@ PeerAgent 践行**“用户是主持人”**原则：AI 负责准备材料、多
 2. **交叉审阅**：另一方独立查验底层代码与行号，出具评审意见；
 3. **人类勾选**：用户逐条勾选“采纳 / PASS / 修改”；
 4. **加密冻结**：计算方案全文 SHA-256 哈希，运行 `peer freeze <方案.md>` 固定版本，任何未获批准的操作一律不执行。
+
+---
+
+## ⚙️ 配置文件与终端命令行直接调用
+
+PeerAgent 的全局配置位于 `~/.peer-review/config.json`，安装时会自动生成默认模板。
+
+除在对话框使用斜杠命令外，你也可以在任何终端中直接使用 `peer` CLI：
+```bash
+# 运行环境与账号登录自检
+peer doctor
+
+# 发起一次只读审阅
+peer ask codex review --request ./task.md --cwd .
+
+# 等待审阅结束并查看结果与 Diff
+peer wait <运行编号> --cwd .
+
+# 查看今日调用次数与 Token 消耗统计
+peer stats
+```
+
+---
+
+## ❓ 常见问题排查（FAQ）
+
+<details>
+<summary><b>1. PeerAgent 会扣我的商业 API 费用吗？</b></summary>
+不会。PeerAgent 默认直接驱动本机官方已安装登录的 CLI（`claude`、`codex`），使用您的 ChatGPT Plus/Team 或 Claude Pro/Team 订阅配额。只要您在官方 CLI 里使用的是网页/订阅登录，就不会产生额外 API 扣费。
+</details>
+
+<details>
+<summary><b>2. 提示“熔断停机锁生效中（STOP）”怎么办？</b></summary>
+如果检测到严重鉴权失效或疑似封控风控风险，PeerAgent 会在 <code>~/.peer-review/STOP</code> 放置物理熔断锁。这是为了保护您的账号不被高频重试牵连。此时 AI 代理被硬性禁止自动恢复该文件。请您人工核实该工具的登录状态正常后，在终端手动删除该锁文件即可恢复：<code>rm ~/.peer-review/STOP*</code>。
+</details>
+
+<details>
+<summary><b>3. 为什么不支持原生 Windows？</b></summary>
+PeerAgent 的并发进程控制与安全文件排他锁使用了 POSIX 的 <code>fcntl</code> 与进程组信号。Windows 用户请在 <b>WSL2</b>（Windows Subsystem for Linux）环境下运行。
+</details>
 
 ---
 

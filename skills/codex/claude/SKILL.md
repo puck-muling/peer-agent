@@ -85,28 +85,11 @@ if peer_bin:
         wait_cmd = [peer_bin, "wait", run_id, "--cwd", str(workdir), "--timeout", str(timeout_seconds)]
         wait_proc = subprocess.run(wait_cmd)
         sys.exit(wait_proc.returncode)
+    else:
+        sys.exit(0)
 
-# 2. 备选：直接调用本机 claude CLI
-claude = shutil.which("claude")
-if not claude:
-    raise SystemExit("本机未找到 peer 或 claude CLI 工具；未执行请求")
-
-env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_USE_"))}
-env["PEER_DEPTH"] = "1"
-
-argv = [
-    claude, "-p", "--output-format", "json",
-    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write",
-    "--permission-mode", "acceptEdits", "--permission-prompts", "none",
-    "--settings", '{"disableAllHooks":true}', "--effort", effort,
-]
-p = subprocess.Popen(argv, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-out, err = p.communicate(task_prompt, timeout=timeout_seconds)
-if p.returncode == 0:
-    res = json.loads(out)
-    print(res.get("result", out))
-else:
-    print(err, file=sys.stderr)
+# 未找到 peer 调度工具时严格报错，拒绝无保护裸跑
+raise SystemExit("【错误】未找到 peer 调度工具（请运行 ./install.sh 或确保 peer 在 PATH 中）。所有跨端调用必须经过 peer 以保证沙箱安全、快照回滚与熔断保护。")
 ```
 
 ## 等待与汇报
