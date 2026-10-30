@@ -24,3 +24,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Local notes / promotional drafts
+*TWITTER*
+*twitter*
+drafts/
