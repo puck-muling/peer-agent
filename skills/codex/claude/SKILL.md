@@ -39,6 +39,10 @@ if not peer_bin:
     candidate = os.path.join(peer_home, "bin", "peer")
     if os.path.exists(candidate) and os.access(candidate, os.X_OK):
         peer_bin = candidate
+    else:
+        local_candidate = os.path.expanduser("~/.local/bin/peer")
+        if os.path.exists(local_candidate) and os.access(local_candidate, os.X_OK):
+            peer_bin = local_candidate
 
 # 1. 优先通过 peer 调度（享有快照、diff 与统一熔断保护）
 if peer_bin:

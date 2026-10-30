@@ -20,9 +20,9 @@
   peer status [运行编号] --cwd 项目目录
       查看某次或最近 10 次调用的状态。
 
-  peer freeze <方案文档> --cwd 项目目录 --review-receipt 终审回执目录 [--quote 用户原话]
-      冻结方案：先核对终审回执（三件齐全、指纹一致、批准了方案当前 SHA-256），
-      再生成冻结版副本、内容指纹、项目快照和交接语。没有终审回执不能冻结。
+  peer freeze <方案文档> --cwd 项目目录 [--review-receipt 终审回执目录] [--quote 用户原话]
+      冻结方案：生成冻结版副本、计算 SHA-256 内容指纹、记录项目快照和交接语。
+      （若指定 --review-receipt，将严格核对终审回执签名；未指定则以独立指纹固化模式运行）。
   peer verify <冻结版文件>
       核对冻结版是否被改动。
   peer since-freeze <冻结版文件>
