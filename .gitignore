@@ -7,6 +7,9 @@ __pycache__/
 env/
 venv/
 .venv/
+*.cover
+.coverage
+htmlcov/
 build/
 develop-eggs/
 dist/
