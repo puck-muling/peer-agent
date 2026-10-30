@@ -1,0 +1,1989 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""peer：Antigravity 调用 Codex / Claude 的统一入口（/codex、/claude 两个 skill 共用）
+
+用法：
+  peer doctor [--approve]
+      自检：python、两个 CLI 的位置和版本、登录方式、代理端口。
+      --approve：把当前登录方式记为“已确认”（登录方式改变后需要重新确认）。
+
+  peer ask <codex|claude> <类型> --request 文件 --cwd 项目目录 [--quote 用户原话] [--add-dir 目录 ...]
+           [--model 模型] [--effort 强度] [--foreground]
+      类型：plan 出方案 | review 审阅 | advice 结论与建议 | exec 修改执行 | image 生成图片（仅 codex）
+      plan/review/advice 为只读；exec/image 为可写，必须带 --quote（用户授权原话），调用前自动快照。
+      默认在后台启动调用，立刻返回运行编号；--foreground 则在前台等到结束。不会自动重试。
+      模型和强度：本次指定（--model/--effort）> config.json 固定 > 跟随 Codex / Claude Code 自己的设置 > 程序默认。
+
+  peer wait <运行编号> --cwd 项目目录 [--timeout 秒]
+      等待调用结束并打印结果。超时只代表“还在跑”，请再次 wait，不要重新 ask。
+
+  peer status [运行编号] --cwd 项目目录
+      查看某次或最近 10 次调用的状态。
+
+  peer freeze <方案文档> --cwd 项目目录 --review-receipt 终审回执目录 [--quote 用户原话]
+      冻结方案：先核对终审回执（三件齐全、指纹一致、批准了方案当前 SHA-256），
+      再生成冻结版副本、内容指纹、项目快照和交接语。没有终审回执不能冻结。
+  peer verify <冻结版文件>
+      核对冻结版是否被改动。
+  peer since-freeze <冻结版文件>
+      列出冻结以来项目的改动（供执行后审阅）。
+
+  peer stats
+      今天各方的调用次数和用量合计。
+"""
+import argparse
+import datetime
+import difflib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import threading
+import time
+
+# ---------------------------------------------------------------- 基本设置
+HOME = os.path.expanduser("~")
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PEER_HOME = os.environ.get("PEER_HOME") or os.path.join(HOME, ".peer-review")
+CONFIG_PATH = os.environ.get("PEER_CONFIG") or os.path.join(PEER_HOME, "config.json")
+
+# 查找模板目录：优先使用仓库内 templates/，否则使用 ~/.peer-review/templates/
+if os.path.isdir(os.path.join(REPO_DIR, "templates")):
+    DEFAULT_TEMPLATES = os.path.join(REPO_DIR, "templates")
+else:
+    DEFAULT_TEMPLATES = os.path.join(PEER_HOME, "templates")
+TEMPLATES = os.environ.get("PEER_TEMPLATES_DIR") or DEFAULT_TEMPLATES
+
+GLOBAL_LOG = os.path.join(PEER_HOME, "logs", "calls.jsonl")
+TEST_MODE = os.environ.get("PEER_TEST_MODE") == "1"
+STOP_LOCK_PATH = os.path.join(PEER_HOME, "STOP")
+STOP_CODEX_PATH = os.path.join(PEER_HOME, "STOP-codex")
+STOP_CLAUDE_PATH = os.path.join(PEER_HOME, "STOP-claude")
+IMAGE_COOLDOWN_PATH = os.path.join(PEER_HOME, "last_image_time.json")
+IMAGE_LOCK_PATH = os.path.join(PEER_HOME, "image.lock")
+
+FATAL_BANNED_PATTERNS = [
+    r"account[_\s]+(is\s+|has\s+been\s+)?deactivated",
+    r"account[_\s]+(is\s+|has\s+been\s+)?suspended",
+    r"account[_\s]+(is\s+|has\s+been\s+)?banned",
+    r"account[_\s]+(is\s+|has\s+been\s+)?disabled",
+    r"your\s+account\s+has\s+been\s+(deactivated|suspended|banned|disabled)",
+    r"organization_disabled",
+    r"unsupported_country",
+]
+
+AUTH_RELOGIN_PATTERNS = [
+    r"token_revoked",
+    r"refresh_token_invalidated",
+    r"refresh_token_expired",
+    r"refresh_token_reused",
+    r"401\s*unauthorized",
+    r"auth error:\s*401",
+    r"status\s*401",
+]
+
+AGENT_NAMES = {"codex": "Codex", "claude": "Claude"}
+KINDS = {
+    "plan": ("出方案", "read"),
+    "review": ("审阅", "read"),
+    "advice": ("结论与建议", "read"),
+    "exec": ("修改执行", "write"),
+    "image": ("生成图片", "write"),
+}
+MODE_CN = {"read": "只读", "write": "可写"}
+STATE_CN = {
+    "queued": "排队中",
+    "running": "运行中",
+    "completed": "完成",
+    "failed": "失败",
+    "timeout": "超时",
+    "unknown": "未知（进程已结束但结果没有回收）",
+}
+TERMINAL = {"completed", "failed", "timeout"}
+
+DEFAULT_CONFIG = {
+    "bins": {"claude": "claude", "codex": "codex"},
+    "models": {"claude": "", "codex": ""},
+    "efforts": {"claude": "", "codex": "high"},
+    "service_tiers": {"codex": "default"},
+    "follow_app_settings": True,
+    "approved_auth": {"claude": "subscription", "codex": "subscription"},
+    "max_turns": {"read": 20, "write": 120},
+    "timeout_minutes": {"read": 30, "write": 60},
+    "proxy_check": None,
+    "codex_disable_apps": False,
+}
+
+# 快照设置
+SKIP_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
+    ".peer-review", ".council", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".next", ".nuxt", ".gradle", ".idea", ".cache", ".tox",
+}
+SKIP_FILES = {".DS_Store"}
+COPY_MAX = 2 * 1024 * 1024        # 单个文本文件超过 2MB 不复制（只记指纹）
+HASH_MAX = 64 * 1024 * 1024       # 超过 64MB 的文件只记大小和修改时间
+TOTAL_COPY_CAP = 300 * 1024 * 1024
+FILE_CAP = 40000
+DIFF_CAP = 2 * 1024 * 1024
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# 疑似敏感文件：只记指纹用于发现改动，不复制内容、不显示差异
+SECRET_RE = re.compile(r"(^|/)(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|ed25519|ecdsa)(\.pub)?|"
+                       r".*credentials.*|.*secret.*|.*token.*\.json|\.netrc|\.npmrc|\.pypirc)$", re.I)
+
+
+class PeerError(Exception):
+    pass
+
+
+def now():
+    return datetime.datetime.now()
+
+
+def ts(dt=None):
+    return (dt or now()).strftime("%Y%m%d-%H%M%S")
+
+
+def iso(dt=None):
+    return (dt or now()).isoformat(timespec="seconds")
+
+
+def die(msg, code=2):
+    print("【peer 错误】" + msg)
+    sys.exit(code)
+
+
+def load_config():
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                user = json.load(f)
+            for k, v in user.items():
+                if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                    cfg[k].update(v)
+                else:
+                    cfg[k] = v
+        except Exception as e:
+            die("config.json 读取失败：%s" % e)
+    return cfg
+
+
+def save_config(cfg):
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, CONFIG_PATH)
+
+
+def agent_bin(cfg, agent):
+    if TEST_MODE and os.environ.get("PEER_%s_BIN" % agent.upper()):
+        return os.environ["PEER_%s_BIN" % agent.upper()]
+    target = (cfg.get("bins") or {}).get(agent, agent)
+    expanded = os.path.expanduser(target)
+    if os.path.isabs(expanded) and os.path.exists(expanded):
+        return expanded
+    resolved = shutil.which(target)
+    if resolved:
+        return resolved
+    return expanded
+
+
+def child_env(base_env=None):
+    """调用 Codex / Claude 时使用的环境变量：去掉 Antigravity 的内部变量和令牌，并注入调用深度标记。"""
+    src = base_env if base_env is not None else os.environ
+    env = {}
+    for k, v in src.items():
+        if k.startswith(("ANTIGRAVITY_", "ANTHROPIC_", "CLAUDE_CODE_USE_")) or "CSRF" in k.upper():
+            continue
+        if k.startswith("PEER_TEST_") or (k.startswith("PEER_") and k != "PEER_DEPTH"):
+            continue
+        env[k] = v
+    curr_depth = 0
+    raw = (src.get("PEER_DEPTH") or "").strip()
+    if raw:
+        try:
+            curr_depth = int(float(raw))
+        except ValueError:
+            curr_depth = 1 if raw.lower() in ("true", "yes", "on") else 0
+    env["PEER_DEPTH"] = str(max(1, curr_depth + 1))
+    return env
+
+
+def scrub(s, limit=None):
+    if s is None:
+        return ""
+    s = EMAIL_RE.sub("<邮箱已隐藏>", str(s))
+    if limit and len(s) > limit:
+        s = s[:limit] + "\n…（已截断，完整内容见文件）"
+    return s
+
+
+def run_quick(args, timeout=60):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=child_env())
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return "timeout", "", ""
+    except Exception as e:
+        return "error:%s" % type(e).__name__, "", ""
+
+
+def pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def append_jsonl(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------------------------------------------------------------- 项目目录
+def project_root(cwd):
+    p = os.path.realpath(os.path.expanduser(cwd or os.getcwd()))
+    if not os.path.isdir(p):
+        die("项目目录不存在：%s" % p)
+    if p in (os.path.realpath(HOME), "/", os.path.realpath(os.path.join(HOME, "Desktop"))):
+        die("项目目录不能是家目录、桌面或根目录：%s。请用 --cwd 指定具体项目文件夹。" % p)
+    return p
+
+
+def peer_dir(root):
+    d = os.path.join(root, ".peer-review")
+    os.makedirs(os.path.join(d, "runs"), exist_ok=True)
+    return d
+
+
+def run_dir_of(root, run_id):
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-(codex|claude)-[a-z]+(-[0-9]+)?", run_id or ""):
+        die("运行编号格式不对：%s" % run_id)
+    d = os.path.join(root, ".peer-review", "runs", run_id)
+    if not os.path.isdir(d):
+        die("找不到这次调用：%s（项目目录：%s）" % (run_id, root))
+    return d
+
+
+# ---------------------------------------------------------------- 快照与改动对比
+def is_text(path, size):
+    if size > COPY_MAX:
+        return False
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if b"\0" in data[:8192]:
+            return False
+        data.decode("utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def scan(root):
+    entries = {}
+    skipped = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        keep = []
+        for d in sorted(dirnames):
+            if d in SKIP_DIRS:
+                skipped.add(os.path.relpath(os.path.join(dirpath, d), root))
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        for fn in sorted(filenames):
+            if fn in SKIP_FILES:
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    entries[rel] = {"type": "link", "target": os.readlink(full)}
+                except OSError:
+                    pass
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            e = {"size": st.st_size, "mtime": st.st_mtime}
+            if st.st_size <= HASH_MAX:
+                try:
+                    e["sha"] = sha256_file(full)
+                except OSError:
+                    e["sha"] = "unreadable"
+            entries[rel] = e
+            if len(entries) > FILE_CAP:
+                raise PeerError("项目文件超过 %d 个，无法快照。请用 --cwd 指定更小的项目目录。" % FILE_CAP)
+    return entries, sorted(skipped)
+
+
+def snapshot(root, dest):
+    os.makedirs(os.path.join(dest, "files"), exist_ok=True)
+    entries, skipped = scan(root)
+    total = 0
+    not_copied = 0
+    for rel, e in entries.items():
+        if e.get("type") == "link":
+            continue
+        full = os.path.join(root, rel)
+        if SECRET_RE.search(rel):
+            e["secret"] = True
+            not_copied += 1
+            continue
+        if total + e["size"] <= TOTAL_COPY_CAP and is_text(full, e["size"]):
+            target = os.path.join(dest, "files", rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(full, target)
+            e["copied"] = True
+            total += e["size"]
+        else:
+            not_copied += 1
+    manifest = {"root": root, "time": iso(), "entries": entries, "skipped_dirs": skipped,
+                "copied_bytes": total, "not_copied": not_copied}
+    write_json(os.path.join(dest, "manifest.json"), manifest)
+    return manifest
+
+
+def same(a, b):
+    if a.get("type") == "link" or b.get("type") == "link":
+        return a.get("type") == b.get("type") and a.get("target") == b.get("target")
+    if "sha" in a and "sha" in b:
+        return a["sha"] == b["sha"]
+    return a.get("size") == b.get("size") and a.get("mtime") == b.get("mtime")
+
+
+def compare(snap_dir, root):
+    manifest = read_json(os.path.join(snap_dir, "manifest.json"))
+    if not manifest:
+        raise PeerError("快照不存在或已损坏：%s" % snap_dir)
+    old = manifest["entries"]
+    new, skipped = scan(root)
+    added = sorted(set(new) - set(old))
+    deleted = sorted(set(old) - set(new))
+    modified = sorted(k for k in set(old) & set(new) if not same(old[k], new[k]))
+    diffs, no_diff = [], []
+    size = 0
+    for rel in modified + added + deleted:
+        o = old.get(rel)
+        n = new.get(rel)
+        if SECRET_RE.search(rel):
+            no_diff.append(rel + "（疑似敏感文件，不显示内容）")
+            continue
+        old_lines = new_lines = None
+        if o is not None:
+            if o.get("copied"):
+                with open(os.path.join(snap_dir, "files", rel), encoding="utf-8") as f:
+                    old_lines = f.readlines()
+            elif o.get("type") != "link":
+                no_diff.append(rel)
+                continue
+            else:
+                old_lines = ["-> %s\n" % o.get("target")]
+        else:
+            old_lines = []
+        if n is not None:
+            full = os.path.join(root, rel)
+            if n.get("type") == "link":
+                new_lines = ["-> %s\n" % n.get("target")]
+            elif is_text(full, n["size"]):
+                with open(full, encoding="utf-8") as f:
+                    new_lines = f.readlines()
+            else:
+                no_diff.append(rel)
+                continue
+        else:
+            new_lines = []
+        d = "".join(difflib.unified_diff(old_lines, new_lines, "a/" + rel, "b/" + rel))
+        if size + len(d) > DIFF_CAP:
+            no_diff.append(rel + "（差异太大，未列出）")
+            continue
+        size += len(d)
+        diffs.append(d)
+    return {"added": added, "modified": modified, "deleted": deleted, "no_diff": no_diff,
+            "diff": "\n".join(diffs), "skipped_dirs": skipped, "snapshot_time": manifest.get("time")}
+
+
+def changes_markdown(c, title="改动清单"):
+    lines = ["## %s（对比基准：%s 的快照）" % (title, c["snapshot_time"]), ""]
+    if not (c["added"] or c["modified"] or c["deleted"]):
+        lines.append("没有任何文件改动。")
+    for label, key in (("新增", "added"), ("修改", "modified"), ("删除", "deleted")):
+        if c[key]:
+            lines.append("- **%s**（%d）：" % (label, len(c[key])))
+            lines += ["  - `%s`" % x for x in c[key][:200]]
+            if len(c[key]) > 200:
+                lines.append("  - …另有 %d 个" % (len(c[key]) - 200))
+    if c["no_diff"]:
+        lines.append("- **无法生成文字差异**（二进制、过大或快照时未复制）：")
+        lines += ["  - `%s`" % x for x in c["no_diff"][:100]]
+    if c["skipped_dirs"]:
+        lines.append("- 未纳入对比的目录：" + "、".join("`%s`" % s for s in c["skipped_dirs"][:30]))
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- 登录方式
+def auth_state(cfg, agent):
+    """返回 (类别, 说明)。类别：subscription / api / unknown。不显示邮箱和凭证。"""
+    b = agent_bin(cfg, agent)
+    env = child_env()
+    if agent == "claude":
+        if env.get("ANTHROPIC_API_KEY"):
+            return "api", "环境变量里有 ANTHROPIC_API_KEY（会按 API 计费）"
+        code, out, err = run_quick([b, "auth", "status"])
+        try:
+            j = json.loads(out)
+        except Exception:
+            return "unknown", "无法读取 Claude 登录状态（退出码 %s）" % code
+        method = str(j.get("authMethod", ""))
+        sub = str(j.get("subscriptionType", ""))
+        if not j.get("loggedIn"):
+            return "unknown", "Claude 未登录"
+        desc = "authMethod=%s%s" % (method, (" / " + sub) if sub else "")
+        if method == "claude.ai":
+            return "subscription", desc
+        if re.search(r"api|console|key", method, re.I):
+            return "api", desc
+        return "unknown", desc
+    else:
+        if env.get("OPENAI_API_KEY") or env.get("CODEX_API_KEY"):
+            hint = "（环境变量里有 OpenAI/Codex API key）"
+        else:
+            hint = ""
+        code, out, err = run_quick([b, "login", "status"])
+        text = scrub((out + "\n" + err).strip()).splitlines()
+        first = next((l for l in text if "logged" in l.lower() or "login" in l.lower()), text[0] if text else "")
+        if "chatgpt" in first.lower():
+            return "subscription", first + hint
+        if "api" in first.lower():
+            return "api", first + hint
+        return "unknown", (first or "无法读取 Codex 登录状态（退出码 %s）" % code) + hint
+
+
+# ---------------------------------------------------------------- 用量
+def fmt_tokens(n):
+    try:
+        n = int(n or 0)
+    except Exception:
+        return "?"
+    if n >= 10000:
+        return ("%.1f 万" % (n / 10000.0)).replace(".0 万", " 万")
+    return "{:,}".format(n)
+
+
+def describe_usage(u, auth_category=""):
+    if not u:
+        return "未知（对方没有回报用量）"
+    s = "读入 %s" % fmt_tokens(u.get("input"))
+    if u.get("cached"):
+        s += "（缓存 %s）" % fmt_tokens(u["cached"])
+    s += " · 写出 %s" % fmt_tokens(u.get("output"))
+    if u.get("thinking"):
+        s += "（思考 %s）" % fmt_tokens(u["thinking"])
+    if u.get("turns"):
+        s += " · %s 轮" % u["turns"]
+    if u.get("cost_usd"):
+        s += " · 按标价约 $%.2f" % u["cost_usd"]
+        if auth_category == "subscription":
+            s += "（订阅不另收费，占用订阅额度）"
+    return s
+
+
+# ---------------------------------------------------------------- 模型与强度
+NAME_RE = re.compile(r"^[A-Za-z0-9._:/\[\]-]{1,80}$")
+APP_CN = {"codex": "Codex", "claude": "Claude Code"}
+
+
+def read_codex_settings():
+    """只读取 ~/.codex/config.toml 里的 model、model_reasoning_effort 和 service_tier（考虑 profile），其他内容一概不读。"""
+    home = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+    path = os.path.join(home, "config.toml")
+    out = {}
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return out
+    try:
+        import tomllib  # Python 3.11+
+        cfg = tomllib.loads(data.decode("utf-8"))
+        src = {k: v for k, v in cfg.items() if not isinstance(v, dict)}
+        prof = cfg.get("profile")
+        profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+        if isinstance(prof, str) and isinstance(profiles.get(prof), dict):
+            src.update(profiles[prof])
+            out["profile"] = prof
+    except Exception:
+        top = data.decode("utf-8", "replace").split("\n[")[0]
+        src = {}
+        for key in ("model", "model_reasoning_effort", "service_tier"):
+            m = re.search(r'^\s*%s\s*=\s*"([^"]+)"' % key, top, re.M)
+            if m:
+                src[key] = m.group(1)
+    if isinstance(src.get("model"), str):
+        out["model"] = src["model"]
+    if isinstance(src.get("model_reasoning_effort"), str):
+        out["effort"] = src["model_reasoning_effort"]
+    if isinstance(src.get("service_tier"), str):
+        out["service_tier"] = src["service_tier"]
+    return out
+
+
+def read_claude_settings():
+    """只读取 Claude Code settings.json 里的 model、effortLevel，以及服务地址的域名（不读令牌）。"""
+    d = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    j = read_json(os.path.join(d, "settings.json"), {}) or {}
+    out = {}
+    env = j.get("env") if isinstance(j.get("env"), dict) else {}
+    if isinstance(j.get("model"), str):
+        out["model"] = j["model"]
+    elif isinstance(env.get("ANTHROPIC_MODEL"), str):
+        out["model"] = env["ANTHROPIC_MODEL"]
+    if isinstance(j.get("effortLevel"), str):
+        out["effort"] = j["effortLevel"]
+    base = env.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
+    if isinstance(base, str) and base.strip():
+        m = re.match(r"^[a-z]+://([^/:]+)", base.strip())
+        out["provider"] = m.group(1) if m else "自定义地址"
+    return out
+
+
+def resolve_model_effort(cfg, agent, cli_model="", cli_effort="", cli_service_tier=""):
+    """决定本次用的模型、强度与服务层级，以及来源。顺序：本次指定 > config.json 固定 > 跟随程序设置 > 程序默认。"""
+    app = read_codex_settings() if agent == "codex" else read_claude_settings()
+    follow = cfg.get("follow_app_settings", True)
+    res = {"provider": app.get("provider", ""), "agent": agent}
+    items = [
+        ("model", cli_model, (cfg.get("models") or {}).get(agent, "")),
+        ("effort", cli_effort, (cfg.get("efforts") or {}).get(agent, "")),
+    ]
+    if agent == "codex":
+        items.append(("service_tier", cli_service_tier, (cfg.get("service_tiers") or {}).get(agent, "")))
+    for key, cli, fixed in items:
+        if cli:
+            val, src, pas = cli, "本次指定", True
+        elif fixed:
+            val, src, pas = fixed, "固定设置", True
+        elif follow and app.get(key):
+            # Codex 调用时不加载用户配置，所以必须显式传入；Claude 也显式传，避免强度是否生效依赖子进程读取设置
+            val, src, pas = app[key], "跟随 %s 设置" % APP_CN[agent], True
+        else:
+            val, src, pas = "", "程序默认", False
+        if val and not NAME_RE.match(val):
+            raise PeerError("模型、强度或服务层级的写法不合法：%s" % val)
+        if key == "service_tier":
+            st_val = val.lower().strip()
+            if st_val not in ("", "default", "flex"):
+                raise PeerError("服务层级（service_tier）只支持 default 或 flex（当前为：%s）；为防 Plus 账号风控与越权异常，严禁使用 fast/priority 等加速模式。" % val)
+        res[key], res[key + "_src"], res[key + "_pass"] = val, src, pas
+    if app.get("profile"):
+        res["profile"] = app["profile"]
+    return res
+
+
+def describe_me(me, agent=None):
+    who = APP_CN.get(agent or me.get("agent", ""), "程序")
+    model = me.get("model") or "未指定（由 %s 自己决定）" % who
+    effort = me.get("effort") or "未指定（由 %s 自己决定）" % who
+    if me.get("model"):
+        model = "%s（%s）" % (me["model"], me["model_src"])
+    if me.get("effort"):
+        effort = "%s（%s）" % (me["effort"], me["effort_src"])
+    st = ""
+    if me.get("service_tier"):
+        st = "%s（%s）" % (me["service_tier"], me["service_tier_src"])
+    return model, effort, st
+
+
+# ---------------------------------------------------------------- 组装调用
+def build_prompt(agent, kind, rel_request, quote, root="", caller=""):
+    name = AGENT_NAMES[agent]
+    caller_str = caller or os.environ.get("PEER_CALLER") or "主会话"
+    kind_cn, mode = KINDS[kind]
+    if mode == "read":
+        prompt = ("你是作为对等协作模型被调用的 %s（调用方：%s），本次任务类型：%s（只读）。"
+                "请先完整阅读任务说明文件 %s，按其中要求完成，并严格按文件末尾的“回复格式”用中文回复。"
+                "只读：不要创建、修改或删除任何文件，不要运行会改变系统状态的命令。"
+                % (name, caller_str, kind_cn, rel_request))
+        if agent == "claude":
+            prompt += ("\n可用能力：Bash 在沙箱中运行（项目和主目录不可写，临时文件写到 $TMPDIR；Bash 不能联网），"
+                       "可用来跑只读脚本做核验；需要查资料时用 WebSearch / WebFetch。")
+        if kind in ("review", "advice"):
+            prompt += ("\n防虚假共识特别约束：必须先独立核查任务说明中列出的原始需求、底层证据与产物文件，"
+                       "核实方案依赖的关键前提，再阅读待审方案及主代理推断；不得将推断或方案假设当作已证实事实。"
+                       "除本次任务说明明确列出的原始证据文件（如代码文件、changes.diff）外，"
+                       "严禁主动检索、读取或采信任何工作区或全局 .peer-review/runs/ 目录下的历史回复、"
+                       "过程输出或中间审阅结论。"
+                       "无法独立核实的关键事实必须列为证据缺口，并注明工具或网络限制，不得顺着未经证实的假设推导结论。")
+        elif kind == "plan":
+            prompt += ("\n出方案原则：请先核查任务说明中列出的原始需求与证据，严禁未经核实将推测当成既定前提；"
+                       "方案所依赖的关键假设必须显式标明为【假设】，并写明验证方式。")
+        return prompt
+    if kind == "image":
+        root_info = ("\n项目根目录绝对路径为：%s（已授权写入，请在此目录下读取参考文件并将生成的图片保存至该目录下的指定路径）。" % root) if root else ""
+        return ("你是作为对等协作模型被调用的 %s（调用方：%s），本次任务类型：生成图片（可写）。"
+                "用户已在主会话中明确授权本次操作，原话：「%s」，视为已批准实施，不需要再等待确认。"
+                "请先完整阅读任务说明文件 %s。%s\n"
+                "生图特别约束：请严格在项目根目录下操作，仅使用内置生图工具生成所要求的单张图片并保存至目标路径；"
+                "严禁遍历或搜索工作区其他无关文件，严禁自我多轮重复重绘，生成并保存后立即按末尾回复格式用中文汇报。"
+                % (name, caller_str, quote, rel_request, root_info))
+    return ("你是作为对等协作模型被调用的 %s（调用方：%s），本次任务类型：%s（可写）。"
+            "用户已在主会话中明确授权本次操作，原话：「%s」，视为已批准实施，不需要再等待确认。"
+            "请先完整阅读任务说明文件 %s。只在当前项目目录内做与任务相关的改动；"
+            "不要做删除数据、发布、付费等任务说明以外的操作。完成后严格按文件末尾的“回复格式”用中文汇报。"
+            % (name, caller_str, kind_cn, quote, rel_request))
+
+
+def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None):
+    mode = KINDS[kind][1]
+    b = agent_bin(cfg, agent)
+    model = me["model"] if me["model_pass"] else ""
+    effort = me["effort"] if me["effort_pass"] else ""
+    if agent == "claude":
+        # 加载 CLAUDE.md 与 Skill（不再用 --safe-mode / --disable-slash-commands）；仍关闭钩子和 MCP
+        if mode == "read":
+            # 只读：Bash 在 Claude Code 沙箱里跑（项目、主目录和附加目录不可写，$TMPDIR 可写；网络白名单为空，Bash 不能联网），
+            # 联网只走 WebSearch / WebFetch
+            deny = ["Edit(~/**)", "Edit(./**)"] + ["Edit(/%s/**)" % d.rstrip("/") for d in add_dirs]
+            settings = {"disableAllHooks": True,
+                        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                                    "network": {"allowedDomains": [], "strictAllowlist": True}},
+                        "permissions": {"deny": deny}}
+            args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch",
+                    "--allowedTools", "Skill,Bash,WebSearch,WebFetch"]
+        else:
+            settings = {"disableAllHooks": True}
+            args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Edit,Write,Bash,Skill",
+                    "--allowedTools", "Edit,Write,Bash,Skill", "--permission-mode", "acceptEdits"]
+        args += ["--disallowedTools", "mcp__*", "--strict-mcp-config",
+                 "--settings", json.dumps(settings, ensure_ascii=False), "--permission-prompts", "none",
+                 "--no-session-persistence", "--max-turns", str(cfg["max_turns"][mode]),
+                 "--output-format", "stream-json", "--verbose"]
+        for d in add_dirs:
+            args += ["--add-dir", d]
+        if model:
+            args += ["--model", model]
+        if effort:
+            args += ["--effort", effort]
+        return args
+    sandbox = "read-only" if mode == "read" else "workspace-write"
+    args = [b, "exec", "--sandbox", sandbox, "--skip-git-repo-check", "--ephemeral",
+            "--ignore-user-config", "-c", 'approval_policy="never"', "--json",
+            "-o", os.path.join(run_dir, "last_message.txt")]
+    if iso_work:
+        args += ["-C", iso_work]
+    for d in add_dirs:
+        args += ["--add-dir", d]
+    if cfg.get("codex_disable_apps") or kind == "image":
+        args += ["-c", "features.apps=false"]
+    if model:
+        args += ["-m", model]
+    if effort:
+        args += ["-c", 'model_reasoning_effort="%s"' % effort]
+    service_tier = me.get("service_tier") if me.get("service_tier_pass") else ""
+    if service_tier:
+        args += ["-c", 'service_tier="%s"' % service_tier]
+    args.append(prompt)
+    return args
+
+
+def template_text(kind):
+    p = os.path.join(TEMPLATES, kind + ".md")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "请用中文清晰汇报结果。"
+
+
+# 任务书自带回复格式的识别：独立成行的标题（# 标题、加粗或以冒号起头的行），句中顺带提到不算
+TASK_FORMAT_RE = re.compile(
+    r"^[ \t]{0,3}(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*(回复格式|回复要求|输出格式|交付格式|汇报格式|返回格式)"
+    r"[ \t]*(?:\*\*)?[ \t]*(?:[:：].*)?$", re.M)
+# 任务自带格式时仍须保留的模板小节：(小节标题开头, 放在回复的位置)
+TASK_FORMAT_KEEP = {
+    "review": [("关键前提与事实核查", "最前"), ("独立性自述", "最后")],
+    "advice": [("不确定之处与证据缺口", "最后"), ("独立性自述", "最后")],
+    "plan": [("最不确定的一点", "最后")],
+    "exec": [("做过的验证", "最后"), ("偏离与遗留问题", "最后")],
+    "image": [("未完成或与要求不符的地方", "最后")],
+}
+
+
+def template_sections(text):
+    """把模板按“## ”小节切开：{标题: 整节文本}。"""
+    out, cur = {}, None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            cur = line[3:].strip()
+            out[cur] = [line]
+        elif cur:
+            out[cur].append(line)
+    return {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+def reply_format(kind, req_text):
+    """任务书末尾追加的“回复格式”：任务自带格式时以任务为准，只补必备小节；否则用通用模板。"""
+    m = TASK_FORMAT_RE.search(req_text)
+    if not m:
+        return template_text(kind)
+    secs = template_sections(template_text(kind))
+    keep = []
+    for prefix, pos in TASK_FORMAT_KEEP.get(kind, []):
+        title = next((t for t in secs if t.startswith(prefix)), None)
+        if title:
+            keep.append("（放在回复%s）\n%s" % (pos, secs[title]))
+    text = "本次任务说明已自带回复格式（见“%s”）：请以任务说明的格式为准，篇幅按任务需要写全，不受通用字数限制。" % m.group(1)
+    if keep:
+        text += "\n另外必须保留以下部分（任务格式中已有同类内容的可合并，不要重复）：\n\n" + "\n\n".join(keep)
+    return text
+
+
+def today_count(agent):
+    day = now().strftime("%Y-%m-%d")
+    n = 0
+    try:
+        with open(GLOBAL_LOG, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    j = json.loads(line)
+                except Exception:
+                    continue
+                if j.get("event") == "ask" and j.get("agent") == agent and str(j.get("time", "")).startswith(day):
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+# ---------------------------------------------------------------- 子命令：ask
+def write_lock_path(root):
+    return os.path.join(root, ".peer-review", "write.lock")
+
+
+def acquire_write_lock(root, run_id):
+    p = write_lock_path(root)
+    for _ in range(2):
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"run_id": run_id, "time": iso(), "pid": os.getpid(), "created_ts": time.time()}, f)
+            return None
+        except FileExistsError:
+            info = read_json(p, {}) or {}
+            other = info.get("run_id")
+            st = read_json(os.path.join(root, ".peer-review", "runs", str(other), "status.json"), {}) or {}
+            # 存活优先：同时检查管理进程 pid、实际执行子进程 child_pid 以及状态记录中的 pid
+            owner_pid = info.get("pid")
+            child_pid = st.get("child_pid") or info.get("child_pid")
+            st_pid = st.get("pid")
+            alive = pid_alive(owner_pid) or pid_alive(child_pid) or pid_alive(st_pid)
+
+            # 启动宽限期保护：若锁创建不足 30 秒，即使 status.json 尚未生成，也绝不判定为陈旧锁
+            created_ts = info.get("created_ts")
+            recent = (time.time() - float(created_ts)) < 30.0 if created_ts else False
+
+            if st.get("state") in TERMINAL or (not alive and not recent):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+                continue
+            return "这个项目里已经有一个可写调用在运行（%s）。等它结束后再试，可用 peer status 查看。" % other
+    return "无法获取可写锁：%s" % p
+
+
+def stop_lock_paths_for(agent=None):
+    paths = [STOP_LOCK_PATH]
+    if agent == "codex":
+        paths.append(STOP_CODEX_PATH)
+    elif agent == "claude":
+        paths.append(STOP_CLAUDE_PATH)
+    elif not agent:
+        paths.extend([STOP_CODEX_PATH, STOP_CLAUDE_PATH])
+    return paths
+
+
+def get_active_stop_lock(agent=None):
+    for p in stop_lock_paths_for(agent):
+        if os.path.exists(p):
+            reason = ""
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    reason = f.read().strip()
+            except Exception:
+                pass
+            return p, reason
+    return None, None
+
+
+def check_circuit_breaker(agent=None):
+    p, reason = get_active_stop_lock(agent)
+    if p:
+        die("【peer 熔断保护生效中】检测到此前已触发安全停机锁（%s）：\n%s\n"
+            "为防止账号连带封禁，已暂停自动调用！请人工排查；确认安全后由用户本人删除该 STOP 文件即可恢复（严禁 Agent 自动删除）。"
+            % (p, reason or "上一次调用触发了严重鉴权或风控异常"), 3)
+
+
+def trigger_circuit_breaker(reason, run_id, agent=None):
+    target = os.path.join(BASE, f"STOP-{agent}") if agent else STOP_LOCK_PATH
+    try:
+        content = "触发原因：%s\n触发时间：%s\n关联运行：%s\n所属渠道：%s\n" % (reason, iso(), run_id, agent or "全局")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("\n【peer 严重安全警报】已触发熔断停机锁（%s）！" % target)
+        print("原因：%s。已阻断后续自动调用以防止连带封号！（注：严禁 Agent 自动删除此锁，必须由用户人工核实处理）\n" % reason)
+    except Exception as e:
+        sys.stderr.write("[peer] 写入 STOP 熔断锁失败: %s\n" % e)
+
+
+class ImageGlobalLock:
+    """跨进程、跨工作区全局生图互斥锁与拟人化冷却控制器。"""
+    def __init__(self, run_id=""):
+        self.run_id = run_id
+        self.fd = None
+        self.start_ts = None
+
+    def __enter__(self):
+        try:
+            self.fd = open(IMAGE_LOCK_PATH, "a+", encoding="utf-8")
+            # 非阻塞轮询获取全局排他锁，带排队总超时（300秒），杜绝无限阻塞
+            t0 = time.time()
+            timeout = 300.0
+            locked = False
+            while time.time() - t0 < timeout:
+                try:
+                    fcntl.flock(self.fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except (BlockingIOError, OSError):
+                    time.sleep(1.0)
+            if not locked:
+                raise TimeoutError("排队获取全局生图排他锁超时（%d秒）。前序生图任务可能仍在运行中。" % int(timeout))
+        except Exception as e:
+            if self.fd:
+                try:
+                    self.fd.close()
+                except Exception:
+                    pass
+                self.fd = None
+            raise RuntimeError("获取全局生图排他锁失败（%s）: %s。为防止并发滥用，放弃执行本次生图。" % (IMAGE_LOCK_PATH, e))
+        self.enforce_cooldown()
+        self.record_start()
+        return self
+
+    def enforce_cooldown(self):
+        if TEST_MODE or not os.path.exists(IMAGE_COOLDOWN_PATH):
+            return
+        try:
+            with open(IMAGE_COOLDOWN_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            last_ts = max(float(data.get("end_time", 0)),
+                          float(data.get("start_time", 0)),
+                          float(data.get("timestamp", 0)))
+            if last_ts <= 0:
+                return
+            elapsed = time.time() - last_ts
+            import random
+            target_cooldown = random.uniform(20.0, 30.0)
+            if elapsed < target_cooldown:
+                wait_sec = max(0.0, min(target_cooldown - elapsed, 30.0))
+                if wait_sec > 0.05:
+                    print("[peer] 拟人生图安全冷却中：距离上一张出图不足 %.1f 秒，休眠等待 %.1f 秒……" % (target_cooldown, wait_sec))
+                    sys.stdout.flush()
+                    time.sleep(wait_sec)
+        except Exception:
+            pass
+
+    def record_start(self):
+        try:
+            self.start_ts = time.time()
+            write_json(IMAGE_COOLDOWN_PATH, {
+                "start_time": self.start_ts,
+                "timestamp": self.start_ts,
+                "time": iso(),
+                "state": "generating",
+                "run_id": self.run_id
+            })
+        except Exception:
+            pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            write_json(IMAGE_COOLDOWN_PATH, {
+                "start_time": self.start_ts,
+                "end_time": time.time(),
+                "timestamp": time.time(),
+                "time": iso(),
+                "state": "idle",
+                "last_run_id": self.run_id
+            })
+        except Exception:
+            pass
+        if self.fd:
+            try:
+                fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
+                self.fd.close()
+            except Exception:
+                pass
+
+
+def scan_fatal_auth_error(err_path, info_error="", state="", exit_code=None):
+    """精准扫描致命鉴权与封号风控错误。
+    返回 (pat, snippet, category)，category 为 'banned'（致命封号写锁停机）或 'relogin'（认证失效需重登，不写锁）。
+    普通错误（403、限流、额度不足、超时）返回 (None, None, '')，绝不写锁。
+    """
+    if state == "completed" and exit_code in (0, None) and not info_error:
+        return None, None, ""
+    texts = [str(info_error) if info_error else ""]
+    if err_path and os.path.exists(err_path):
+        try:
+            with open(err_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 200000))
+                texts.append(f.read())
+        except Exception:
+            pass
+    combined = "\n".join(texts).lower()
+    for pat in FATAL_BANNED_PATTERNS:
+        m = re.search(pat, combined)
+        if m:
+            start = max(0, m.start() - 60)
+            end = min(len(combined), m.end() + 100)
+            snippet = scrub(combined[start:end].replace("\n", " ").strip())
+            return pat, snippet, "banned"
+    for pat in AUTH_RELOGIN_PATTERNS:
+        m = re.search(pat, combined)
+        if m:
+            start = max(0, m.start() - 60)
+            end = min(len(combined), m.end() + 100)
+            snippet = scrub(combined[start:end].replace("\n", " ").strip())
+            return pat, snippet, "relogin"
+    return None, None, ""
+
+
+def is_nested_depth(depth_raw):
+    if not depth_raw:
+        return False
+    d = depth_raw.strip().lower()
+    if d in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return float(d) >= 1.0
+    except ValueError:
+        return False
+
+
+def cmd_ask(a, env=None):
+    check_circuit_breaker(a.agent)
+    effective_env = env if env is not None else (getattr(a, "env", None) or os.environ)
+    depth_raw = (effective_env.get("PEER_DEPTH") or "").strip()
+    if is_nested_depth(depth_raw):
+        die("检测到嵌套调用（PEER_DEPTH=%s）：禁止在 Codex / Claude 任务进程中再次调用 peer ask，防止递归死循环。" % depth_raw)
+    cfg = load_config()
+    agent, kind = a.agent, a.kind
+    if agent not in AGENT_NAMES:
+        die("只支持 codex 或 claude")
+    if kind not in KINDS:
+        die("类型只能是：plan / review / advice / exec / image")
+    if kind == "image":
+        if agent == "claude":
+            die("Claude 没有图片生成能力。请改用 /codex 生成图片，或让 Antigravity 自己生成；"
+                "如果只需要示意图，可以让 Claude 用 exec 类型写 SVG 或绘图代码。", 5)
+    mode = KINDS[kind][1]
+    root = project_root(a.cwd)
+    quote = re.sub(r"\s+", " ", (a.quote or "")).strip()[:300]
+    if mode == "write" and not quote:
+        die("可写类型（exec / image）必须用 --quote 带上用户授权的原话。")
+    req = os.path.realpath(os.path.expanduser(a.request))
+    if not os.path.isfile(req):
+        die("任务说明文件不存在：%s" % req)
+    if os.path.getsize(req) > 2 * 1024 * 1024:
+        die("任务说明文件超过 2MB，请只写路径让对方自己读取。")
+    add_dirs = []
+    for d in a.add_dir or []:
+        rd = os.path.realpath(os.path.expanduser(d))
+        if not os.path.isdir(rd):
+            die("--add-dir 不是目录：%s" % rd)
+        add_dirs.append(rd)
+    b = agent_bin(cfg, agent)
+    if not (os.path.isfile(b) and os.access(b, os.X_OK)):
+        die("找不到 %s 命令：%s。请先安装并登录，再运行 peer doctor。" % (AGENT_NAMES[agent], b))
+    try:
+        me = resolve_model_effort(cfg, agent, (a.model or "").strip(), (a.effort or "").strip(), (getattr(a, "service_tier", "") or "").strip())
+    except PeerError as e:
+        die(str(e))
+
+    cat, desc = auth_state(cfg, agent)
+    approved = (cfg.get("approved_auth") or {}).get(agent, "subscription")
+    if cat != approved:
+        die("%s 的登录方式和已确认的不一致，已停止调用，没有产生任何请求。\n"
+            "  当前：%s（%s）\n  已确认：%s\n"
+            "请告诉用户这个变化；用户确认没问题后，运行 peer doctor --approve 记录新的登录方式。"
+            % (AGENT_NAMES[agent], cat, desc, approved), 3)
+
+    pdir = peer_dir(root)
+    base_id = "%s-%s-%s" % (ts(), agent, kind)
+    run_id, n = base_id, 1
+    while True:
+        rdir = os.path.join(pdir, "runs", run_id)
+        try:
+            os.makedirs(rdir)
+            break
+        except FileExistsError:
+            n += 1
+            run_id = "%s-%d" % (base_id, n)
+
+    if mode == "write":
+        err = acquire_write_lock(root, run_id)
+        if err:
+            shutil.rmtree(rdir, ignore_errors=True)
+            die(err, 4)
+
+    with open(req, encoding="utf-8", errors="replace") as f:
+        req_text = f.read()
+    with open(os.path.join(rdir, "request.md"), "w", encoding="utf-8") as f:
+        f.write(req_text.rstrip() + "\n\n---\n\n## 回复格式\n\n" + reply_format(kind, req_text) + "\n")
+
+    iso_work = None
+    if kind == "image":
+        # 隔离工作区：主工作区置于纯净独立目录，仅含 request.md，杜绝 Codex 启动扫描 800+ 项目文件
+        iso_work = os.path.join(rdir, "work")
+        os.makedirs(iso_work, exist_ok=True)
+        shutil.copy2(os.path.join(rdir, "request.md"), os.path.join(iso_work, "request.md"))
+        rel_request = "request.md"
+        if root not in add_dirs:
+            add_dirs.append(root)
+    else:
+        rel_request = os.path.relpath(os.path.join(rdir, "request.md"), root)
+
+    snap_info = None
+    if mode == "write":
+        print("可写调用：正在给项目做快照……")
+        try:
+            m = snapshot(root, os.path.join(rdir, "snapshot"))
+        except PeerError as e:
+            try:
+                os.remove(write_lock_path(root))
+            except OSError:
+                pass
+            shutil.rmtree(rdir, ignore_errors=True)
+            die(str(e))
+        snap_info = {"files": len(m["entries"]), "copied_bytes": m["copied_bytes"], "not_copied": m["not_copied"]}
+
+    prompt = build_prompt(agent, kind, rel_request, quote, root=root, caller=getattr(a, "caller", ""))
+    args = build_args(cfg, agent, kind, prompt, rdir, add_dirs, me, iso_work=iso_work)
+    timeout_mins = 10 if kind == "image" else cfg["timeout_minutes"][mode]
+    meta = {"run_id": run_id, "agent": agent, "kind": kind, "mode": mode, "root": root,
+            "exec_cwd": iso_work or root,
+            "request_source": req, "quote": quote, "add_dirs": add_dirs, "created": iso(),
+            "auth": {"category": cat, "desc": desc}, "args": args, "snapshot": snap_info,
+            "timeout_minutes": timeout_mins, "model_effort": me}
+    write_json(os.path.join(rdir, "meta.json"), meta)
+    write_json(os.path.join(rdir, "status.json"), {"state": "queued", "time": iso()})
+
+    log = {"event": "ask", "time": iso(), "agent": agent, "kind": kind, "mode": mode, "run_id": run_id, "root": root}
+    append_jsonl(os.path.join(pdir, "calls.jsonl"), log)
+    append_jsonl(GLOBAL_LOG, log)
+
+    if a.foreground:
+        m_disp, e_disp, st_disp = describe_me(me)
+        st_part = ("，模式：%s" % st_disp) if st_disp else ""
+        print("在前台运行 %s（%s，%s），模型：%s，强度：%s%s，运行编号：%s，请等待……" % (
+            AGENT_NAMES[agent], KINDS[kind][0], MODE_CN[mode], m_disp, e_disp, st_part, run_id))
+        sys.stdout.flush()
+        cmd_run(rdir)
+        a.run_id, a.timeout = run_id, 10
+        cmd_wait(a)
+        return
+    devnull = open(os.devnull, "wb")
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "_run", rdir],
+                     cwd=root, stdin=devnull, stdout=devnull, stderr=devnull,
+                     start_new_session=True, env=os.environ.copy())
+    print("已在后台启动 %s（%s，%s）。" % (AGENT_NAMES[agent], KINDS[kind][0], MODE_CN[mode]))
+    m_disp, e_disp, st_disp = describe_me(me)
+    st_part = ("；模式：%s" % st_disp) if st_disp else ""
+    print("模型：%s；强度：%s%s" % (m_disp, e_disp, st_part))
+    print("运行编号：%s" % run_id)
+    print("记录目录：%s" % rdir)
+    if snap_info:
+        print("调用前快照：%d 个文件" % snap_info["files"])
+    print("今天第 %d 次调用 %s。" % (today_count(agent), AGENT_NAMES[agent]))
+    print("下一步：peer wait %s --cwd \"%s\"" % (run_id, root))
+
+
+# ---------------------------------------------------------------- 后台执行
+# ---------------------------------------------------------------- 中断识别
+LIMIT_TEXT_RE = re.compile(r"hit your .{0,40}limit|usage limit reached|rate limit", re.I)
+LIMIT_WINDOW_CN = {"five_hour": "5 小时", "seven_day": "7 天", "seven_day_opus": "7 天（Opus）"}
+# Codex 的过渡性连接错误：重连成功、改走 HTTPS 后仍可能正常完成
+TRANSIENT_RE = re.compile(r"Reconnecting|stream disconnected|Falling back from WebSockets", re.I)
+STALL_MINUTES = 10  # Codex 最后一条输出是断流/重连、之后这么久没有任何新输出，就提前终止
+
+
+def partial_text(texts, limit=4000):
+    """中断前最后几段过程消息，供续作参考。"""
+    return "\n\n---\n\n".join(t.strip() for t in texts[-3:] if t.strip())[-limit:]
+
+
+def stalled_after_disconnect(out_path):
+    try:
+        if time.time() - os.path.getmtime(out_path) < STALL_MINUTES * 60:
+            return False
+        with open(out_path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4096))
+            lines = f.read().decode("utf-8", "replace").strip().splitlines()
+    except OSError:
+        return False
+    return bool(lines) and bool(TRANSIENT_RE.search(lines[-1]))
+
+
+def parse_claude(stdout_path):
+    info = {"ok": False, "answer": "", "models": [], "warnings": [], "error": "", "usage": None}
+    try:
+        with open(stdout_path, encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+    except OSError:
+        raw = ""
+    if not raw.strip():
+        info["error"] = "Claude 进程结束了，但没有输出任何内容"
+        return info
+    events = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    if not events:
+        try:
+            ev = json.loads(raw)
+            if isinstance(ev, dict):
+                events.append(ev)
+        except Exception:
+            pass
+    if not events:
+        info["error"] = "Claude 的输出无法解析"
+        return info
+    result = None
+    texts = []
+    limit = None
+    for ev in events:
+        if ev.get("type") == "result" or ("subtype" in ev and "is_error" in ev):
+            result = ev
+        elif ev.get("type") == "rate_limit_event":
+            rl = ev.get("rate_limit_info") or {}
+            if str(rl.get("status") or "").lower() == "rejected":
+                limit = rl
+        elif ev.get("type") == "system" and ev.get("model"):
+            if ev["model"] not in info["models"]:
+                info["models"].append(str(ev["model"]))
+        elif ev.get("type") == "assistant":
+            msg = ev.get("message") or {}
+            m = msg.get("model")
+            if m == "<synthetic>":
+                continue  # Claude Code 自己生成的提示（如额度用尽），不是模型的回答
+            parts = [c.get("text", "") for c in (msg.get("content") or []) if isinstance(c, dict) and c.get("type") == "text"]
+            if any(x.strip() for x in parts):
+                texts.append("".join(parts))
+            if m and m not in info["models"]:
+                info["models"].append(str(m))
+    if result is not None:
+        u = result.get("usage") or {}
+        if u:
+            cached = int(u.get("cache_read_input_tokens") or 0)
+            total_in = int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0) + cached
+            info["usage"] = {"input": total_in, "cached": cached, "output": int(u.get("output_tokens") or 0),
+                             "thinking": int((u.get("output_tokens_details") or {}).get("thinking_tokens") or 0),
+                             "turns": result.get("num_turns"), "cost_usd": result.get("total_cost_usd")}
+        info["answer"] = str(result.get("result") or "")
+        for m in (result.get("modelUsage") or {}).keys():
+            if m not in info["models"]:
+                info["models"].append(m)
+        den = result.get("permission_denials") or []
+        if den:
+            info["warnings"].append("有 %d 次权限请求被拒绝：%s" % (
+                len(den), "、".join(sorted({str(x.get("tool_name", "?")) for x in den if isinstance(x, dict)}))))
+    sub = result.get("subtype") if result else None
+    failed = result is not None and bool(result.get("is_error") or sub != "success")
+    res_text = str((result or {}).get("result") or "")
+    if limit is None and failed and LIMIT_TEXT_RE.search(res_text):
+        limit = {}
+    if limit is not None:
+        info["answer"] = ""  # 额度提示不是回答
+    if limit is not None or failed:
+        info["partial"] = partial_text(texts)
+    elif not info["answer"].strip() and texts:
+        info["answer"] = texts[-1]
+        if result is not None:
+            info["warnings"].append("最终结果字段为空，已从 Claude 的过程消息里取回最后一段回答，请留意是否完整")
+    if limit is not None:
+        reset = limit.get("resetsAt")
+        when = time.strftime("%m-%d %H:%M", time.localtime(reset)) if isinstance(reset, (int, float)) else "未知时间"
+        window = LIMIT_WINDOW_CN.get(limit.get("rateLimitType"), limit.get("rateLimitType") or "未知")
+        info["error"] = "Claude 订阅额度用尽（%s窗口，约 %s 重置），在第 %s 轮中断，回答不完整" % (
+            window, when, (result or {}).get("num_turns", "?"))
+        info["interrupt"] = "rate_limit"
+    elif result is None and not info["answer"].strip():
+        info["error"] = "没有拿到 Claude 的最终结果"
+    elif failed:
+        info["error"] = "Claude 返回错误：subtype=%s" % sub + (("；" + scrub(res_text, 200)) if res_text.strip() else "")
+        if sub == "error_max_turns":
+            info["error"] = "达到单次调用的轮次上限，回答可能不完整"
+            info["interrupt"] = "max_turns"
+    elif not info["answer"].strip():
+        info["error"] = "Claude 返回了空回答"
+    else:
+        info["ok"] = True
+        if result is None:
+            info["warnings"].append("没有看到最终结果事件，回答取自 Claude 的过程消息，请留意是否完整")
+    for m in info["models"]:
+        if not m.lower().startswith("claude"):
+            info["warnings"].append("实际使用的模型不是官方 Claude：%s" % m)
+    return info
+
+
+def parse_codex(stdout_path, last_path):
+    info = {"ok": False, "answer": "", "models": [], "warnings": [], "error": "", "usage": None}
+    types, errors, transient, texts = {}, [], [], []
+    usage = {"input": 0, "cached": 0, "output": 0, "thinking": 0, "turns": 0}
+    try:
+        with open(stdout_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                t = str(ev.get("type") or "?")
+                types[t] = types.get(t, 0) + 1
+                if t == "turn.completed" and isinstance(ev.get("usage"), dict):
+                    u = ev["usage"]
+                    usage["input"] += int(u.get("input_tokens") or 0)
+                    usage["cached"] += int(u.get("cached_input_tokens") or 0)
+                    usage["output"] += int(u.get("output_tokens") or 0)
+                    usage["thinking"] += int(u.get("reasoning_output_tokens") or 0)
+                    usage["turns"] += 1
+                if t == "error" and TRANSIENT_RE.search(str(ev.get("message") or "")):
+                    transient.append(str(ev.get("message")))
+                elif "error" in t.lower() or "failed" in t.lower():
+                    errors.append(scrub(json.dumps(ev, ensure_ascii=False), 300))
+                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+                if t == "item.completed" and item.get("type") == "agent_message" and str(item.get("text") or "").strip():
+                    texts.append(str(item["text"]))
+                m = ev.get("model")
+                if not m and isinstance(ev.get("item"), dict):
+                    m = ev["item"].get("model")
+                if m and m not in info["models"]:
+                    info["models"].append(str(m))
+    except OSError:
+        pass
+    if usage["turns"]:
+        usage["turns"] = None  # Codex 的“轮”和 Claude 的不是一回事，不显示
+        info["usage"] = usage
+    try:
+        with open(last_path, encoding="utf-8", errors="replace") as f:
+            info["answer"] = f.read()
+    except OSError:
+        info["answer"] = ""
+    info["disconnects"] = len(transient)
+    if errors:
+        info["error"] = "Codex 报告了错误事件：" + " | ".join(errors[:3])
+    elif not info["answer"].strip():
+        if transient:
+            info["error"] = "Codex 连接断流（重连 %d 次）后没有完成" % len(transient)
+            info["interrupt"] = "disconnect"
+        else:
+            info["error"] = "Codex 没有给出最终回答" + ("" if "turn.completed" in types else "（也没有收到过程事件）")
+    else:
+        info["ok"] = True
+        if transient:
+            info["warnings"].append("过程中连接断流 %d 次，已自动恢复并完成" % len(transient))
+        if "turn.completed" not in types:
+            info["warnings"].append("没有收到 Codex 的过程事件，但已拿到它的最终回答；请留意回答是否完整")
+    if not info["ok"]:
+        info["partial"] = partial_text(texts)
+    return info
+
+
+def pump(src, path):
+    """把子进程输出边读边写进文件（用管道接输出，比直接重定向到文件更可靠）。"""
+    with open(path, "wb") as f:
+        while True:
+            chunk = src.read1(65536) if hasattr(src, "read1") else src.read(65536)
+            if not chunk:
+                break
+            f.write(chunk)
+            f.flush()
+
+
+def cmd_run(run_dir):
+    meta = read_json(os.path.join(run_dir, "meta.json"))
+    if not meta:
+        return
+    status_path = os.path.join(run_dir, "status.json")
+    out_path = os.path.join(run_dir, "stdout.log")
+    err_path = os.path.join(run_dir, "stderr.log")
+
+    # 启动前复核：若已触发熔断锁，直接中止，防止排队任务被盲目拉起
+    stop_p, stop_reason = get_active_stop_lock(meta.get("agent"))
+    if stop_p:
+        msg = "安全熔断停机锁生效中（%s）：已阻止该任务拉起子进程！" % (stop_reason or "已锁停")
+        write_json(status_path, {"state": "failed", "pid": os.getpid(), "error": msg, "circuit_breaker": True, "ended": iso()})
+        with open(out_path, "a", encoding="utf-8") as fo:
+            fo.write("\n[peer 熔断保护] " + msg + "\n")
+        banner = "> [!CAUTION]\n> **【安全熔断停机已触发】** 检测到严重鉴权异常或封禁风险，已启动停机保护阻止调用（%s）！请人工排查确认安全后由用户本人删除停机锁恢复（严禁 Agent 自动删除）。\n\n" % stop_p
+        with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
+            f.write(banner + msg + "\n")
+        return
+
+    started = now()
+    write_json(status_path, {"state": "running", "pid": os.getpid(), "started": iso(started)})
+    state, code = "failed", None
+    child = None
+
+    def _sig_cleanup(signum, frame):
+        if child and child.pid:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+                time.sleep(2.0)
+                os.killpg(child.pid, signal.SIGKILL)
+            except Exception:
+                pass
+        sys.exit(1)
+
+    try:
+        signal.signal(signal.SIGTERM, _sig_cleanup)
+        signal.signal(signal.SIGINT, _sig_cleanup)
+        signal.signal(signal.SIGHUP, _sig_cleanup)
+    except (ValueError, OSError):
+        pass
+
+    image_lock_ctx = None
+    if meta.get("kind") == "image":
+        try:
+            image_lock_ctx = ImageGlobalLock(meta["run_id"])
+            image_lock_ctx.__enter__()
+        except Exception as e:
+            msg = "获取全局生图排他锁失败：%s" % e
+            write_json(status_path, {"state": "failed", "pid": os.getpid(), "error": msg, "ended": iso()})
+            with open(out_path, "a", encoding="utf-8") as fo:
+                fo.write("\n[peer 锁保护] " + msg + "\n")
+            banner = "> [!CAUTION]\n> **【生图排他锁获取失败】** %s\n\n为防止并发风控，已安全放弃本次执行。\n" % msg
+            with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
+                f.write(banner)
+            try:
+                lock = read_json(write_lock_path(meta["root"]), {}) or {}
+                if lock.get("run_id") == meta["run_id"]:
+                    os.remove(write_lock_path(meta["root"]))
+            except OSError:
+                pass
+            return
+
+        # 拿到锁并休眠冷却结束后，在启动子进程前严格复查 STOP 熔断锁
+        stop_p, stop_reason = get_active_stop_lock(meta.get("agent"))
+        if stop_p:
+            image_lock_ctx.__exit__(None, None, None)
+            image_lock_ctx = None
+            msg = "安全熔断停机锁生效中（%s）：已阻止该任务拉起子进程！" % (stop_reason or "已锁停")
+            write_json(status_path, {"state": "failed", "pid": os.getpid(), "error": msg, "circuit_breaker": True, "ended": iso()})
+            with open(out_path, "a", encoding="utf-8") as fo:
+                fo.write("\n[peer 熔断保护] " + msg + "\n")
+            banner = "> [!CAUTION]\n> **【安全熔断停机已触发】** 检测到严重鉴权异常或封禁风险，已启动停机保护阻止调用（%s）！请人工排查确认安全后由用户本人删除停机锁恢复（严禁 Agent 自动删除）。\n\n" % stop_p
+            with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
+                f.write(banner + msg + "\n")
+            try:
+                lock = read_json(write_lock_path(meta["root"]), {}) or {}
+                if lock.get("run_id") == meta["run_id"]:
+                    os.remove(write_lock_path(meta["root"]))
+            except OSError:
+                pass
+            return
+
+    info = {"ok": False, "error": "", "answer": "", "models": [], "usage": {}, "warnings": []}
+    changes_md = ""
+    triggered_cb = False
+    stalled = False
+
+    try:
+        try:
+            exec_cwd = meta.get("exec_cwd") or meta.get("cwd") or meta["root"]
+            child = subprocess.Popen(meta["args"], cwd=exec_cwd, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     env=child_env(), start_new_session=True)
+            pumps = [threading.Thread(target=pump, args=(child.stdout, out_path), daemon=True),
+                     threading.Thread(target=pump, args=(child.stderr, err_path), daemon=True)]
+            for th in pumps:
+                th.start()
+            st = read_json(status_path, {})
+            st["child_pid"] = child.pid
+            write_json(status_path, st)
+            if meta.get("mode") == "write":
+                try:
+                    wlock_p = write_lock_path(meta["root"])
+                    wlock_info = read_json(wlock_p, {}) or {}
+                    if wlock_info.get("run_id") == meta["run_id"]:
+                        wlock_info["child_pid"] = child.pid
+                        write_json(wlock_p, wlock_info)
+                except Exception:
+                    pass
+            deadline = time.time() + meta["timeout_minutes"] * 60
+            while True:
+                try:
+                    code = child.wait(timeout=15)
+                    state = "completed" if code == 0 else "failed"
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if time.time() >= deadline:
+                    state = "timeout"
+                elif meta["agent"] == "codex" and stalled_after_disconnect(out_path):
+                    state, stalled = "failed", True
+                else:
+                    continue
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    time.sleep(5)
+                    os.killpg(child.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                break
+            for th in pumps:
+                th.join(30)
+        except Exception as e:
+            with open(err_path, "a", encoding="utf-8") as fe:
+                fe.write("\n[peer] 启动失败：%s\n" % e)
+            state = "failed"
+
+        if meta["agent"] == "claude":
+            info = parse_claude(out_path)
+        else:
+            info = parse_codex(out_path, os.path.join(run_dir, "last_message.txt"))
+        if state == "completed" and not info["ok"]:
+            state = "failed"
+        if state == "failed" and code not in (0, None):
+            info["error"] = ("进程退出码 %s；" % code) + (info["error"] or "")
+        elif state == "failed" and not info["error"]:
+            info["error"] = "进程退出码 %s" % code
+        if state == "timeout":
+            info["error"] = "超过 %g 分钟未完成，已终止" % meta["timeout_minutes"]
+            if info.get("disconnects"):
+                info["error"] += "；此前连接断流 %d 次" % info["disconnects"]
+        if stalled:
+            info["error"] = "Codex 连接断流后 %g 分钟没有任何新输出，已提前终止%s" % (
+                STALL_MINUTES, ("（重连 %d 次）" % info["disconnects"]) if info.get("disconnects") else "")
+            info["interrupt"] = "disconnect"
+
+        # 完整恢复写模式的文件快照审计比对
+        if meta["mode"] == "write":
+            try:
+                c = compare(os.path.join(run_dir, "snapshot"), meta["root"])
+                changes_md = changes_markdown(c)
+                with open(os.path.join(run_dir, "changes.md"), "w", encoding="utf-8") as f:
+                    f.write(changes_md)
+                with open(os.path.join(run_dir, "changes.diff"), "w", encoding="utf-8") as f:
+                    f.write(c["diff"])
+            except Exception as e:
+                changes_md = "## 改动清单\n\n生成改动清单失败：%s\n" % e
+            try:
+                lock = read_json(write_lock_path(meta["root"]), {}) or {}
+                if lock.get("run_id") == meta["run_id"]:
+                    os.remove(write_lock_path(meta["root"]))
+            except OSError:
+                pass
+
+        # 深度致命鉴权/封号熔断扫描：分级精准处理
+        pat, snippet, err_cat = scan_fatal_auth_error(err_path, info.get("error"), state=state, exit_code=code)
+        if pat:
+            if err_cat == "banned":
+                trigger_reason = "捕获致命封号特征 [%s]: %s" % (pat, snippet)
+                trigger_circuit_breaker(trigger_reason, meta["run_id"], agent=meta["agent"])
+                info["error"] = ("【已触发安全熔断停机】%s；" % trigger_reason) + (info["error"] or "")
+                state = "failed"
+                triggered_cb = True
+            elif err_cat == "relogin":
+                info["warnings"].append("⚠️ 账号认证失效或需重新登录（[%s]: %s），请执行登录命令刷新凭据；未触发停机锁。" % (pat, snippet))
+    finally:
+        # 扫描与熔断写入完成后，才安全释放生图全局锁，彻底杜绝排队任务在写 STOP 前并发拉起
+        if image_lock_ctx:
+            try:
+                image_lock_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+            image_lock_ctx = None
+
+    ended = now()
+    dur = int((ended - started).total_seconds())
+    err_tail = ""
+    try:
+        with open(err_path, encoding="utf-8", errors="replace") as f:
+            err_tail = scrub(f.read()[-1500:])
+    except OSError:
+        pass
+
+    # Token 用量分级预警与硬熔断
+    input_tokens = int((info.get("usage") or {}).get("input") or 0)
+    if meta.get("kind") == "image":
+        if input_tokens > 100_000:
+            info["warnings"].append("⚠️ 单次生图输入消耗达 %s Tokens（超出 10 万硬熔断线），请检查提示词或沙盒环境！" % fmt_tokens(input_tokens))
+        elif input_tokens > 30_000:
+            info["warnings"].append("⚠️ 单次生图输入消耗达 %s Tokens（超出 3 万预警线），请关注上下文大小！" % fmt_tokens(input_tokens))
+    elif meta.get("mode") == "read" and input_tokens > 1_000_000:
+        info["warnings"].append("⚠️ 只读审阅输入消耗达 %s Tokens（超出 100 万软预警线）！" % fmt_tokens(input_tokens))
+    elif meta.get("mode") == "write" and input_tokens > 5_000_000:
+        info["warnings"].append("⚠️ 写入修改输入消耗达 %s Tokens（超出 500 万软预警线）！" % fmt_tokens(input_tokens))
+
+    me = meta.get("model_effort") or {"model": "", "model_src": "", "effort": "", "effort_src": "", "provider": ""}
+    m_disp, e_disp, st_disp = describe_me(me)
+    actual = "、".join(info["models"])
+    if meta["agent"] == "codex":
+        actual_line = m_disp + "；Codex 不回报实际模型，以此为准"
+    else:
+        actual_line = "%s；实际返回：%s" % (m_disp, actual or "未知")
+    head = ["# %s · %s（%s）" % (AGENT_NAMES[meta["agent"]], KINDS[meta["kind"]][0], MODE_CN[meta["mode"]]), "",
+            "- 状态：**%s**" % STATE_CN[state],
+            "- 模型：%s" % actual_line,
+            "- 强度：%s" % e_disp]
+    if st_disp:
+        head.append("- 服务层级 / 模式：%s" % st_disp)
+    head += [
+            "- 本次用量：%s" % describe_usage(info.get("usage"), meta["auth"]["category"]),
+            "- 登录方式：%s（%s）" % (meta["auth"]["category"], meta["auth"]["desc"]),
+            "- 服务提供方：%s" % (("第三方/自定义：" + me["provider"]) if me.get("provider") else "官方"),
+            "- 用时：%d 分 %d 秒" % (dur // 60, dur % 60),
+            "- 运行编号：%s" % meta["run_id"]]
+    if info["error"]:
+        head.append("- 问题：%s" % info["error"])
+    for w in info["warnings"]:
+        head.append("- ⚠️ %s" % w)
+    if state != "completed":
+        head.append("- ⚠️ 结果不完整：本次调用没有正常完成，不能当作完整交付；请向用户说明已完成和未覆盖的部分，"
+                    "由用户决定是否续作，不要自动重新 ask")
+    body = info["answer"].strip() or "（没有拿到回答）"
+    if state != "completed" and info.get("partial"):
+        body += "\n\n## 中断前已完成的部分（不完整，仅供续作参考）\n\n" + info["partial"]
+
+    banner = ""
+    active_stop_p, _ = get_active_stop_lock(meta.get("agent"))
+    if triggered_cb or active_stop_p:
+        banner = "> [!CAUTION]\n> **【安全熔断已触发】** 检测到账号严重鉴权异常或封禁风险，已启动停机保护阻止后续调用（%s）！请人工排查确认安全后由用户本人删除停机锁恢复（严禁 Agent 自动删除）。\n\n" % (active_stop_p or "已触发")
+
+    text = banner + "\n".join(head) + "\n\n## 回复\n\n" + body + "\n"
+    if changes_md:
+        text += "\n" + changes_md
+    if state != "completed" and err_tail.strip():
+        text += "\n## 错误输出（末尾）\n\n```\n" + err_tail + "\n```\n"
+    with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
+        f.write(text)
+    write_json(status_path, {"state": state, "pid": os.getpid(), "started": iso(started), "ended": iso(ended),
+                             "exit_code": code, "error": info["error"], "models": info["models"],
+                             "model": me.get("model"), "effort": me.get("effort"),
+                             "service_tier": me.get("service_tier"), "usage": info.get("usage"),
+                             "duration_seconds": dur, "circuit_breaker": triggered_cb,
+                             "interrupt": info.get("interrupt") or ("timeout" if state == "timeout" else "")})
+    log = {"event": "done", "time": iso(), "agent": meta["agent"], "kind": meta["kind"],
+           "run_id": meta["run_id"], "state": state, "root": meta["root"], "usage": info.get("usage")}
+    append_jsonl(os.path.join(meta["root"], ".peer-review", "calls.jsonl"), log)
+    append_jsonl(GLOBAL_LOG, log)
+
+
+# ---------------------------------------------------------------- wait / status
+def current_state(run_dir):
+    st = read_json(os.path.join(run_dir, "status.json"), {}) or {}
+    state = st.get("state", "unknown")
+    if state == "running" and not pid_alive(st.get("pid")):
+        # 管理进程不在了；如果 Codex/Claude 进程还在跑，仍按“运行中”处理，避免重复发起
+        state = "running" if pid_alive(st.get("child_pid")) else "unknown"
+    if state == "queued":
+        created = read_json(os.path.join(run_dir, "meta.json"), {}).get("created")
+        try:
+            age = (now() - datetime.datetime.fromisoformat(created)).total_seconds()
+        except Exception:
+            age = 0
+        if age > 120:
+            state = "unknown"
+    return state, st
+
+
+def cmd_wait(a):
+    root = project_root(a.cwd)
+    rdir = run_dir_of(root, a.run_id)
+    deadline = time.time() + max(10, a.timeout)
+    state, st = current_state(rdir)
+    while state in ("queued", "running") and time.time() < deadline:
+        time.sleep(3)
+        state, st = current_state(rdir)
+    if state in ("queued", "running"):
+        print("还在运行（%s）。这不是失败：请再次运行 peer wait %s --cwd \"%s\"，不要重新 ask。" % (STATE_CN[state], a.run_id, root))
+        sys.exit(10)
+    if state == "unknown":
+        print("状态未知：后台进程已经不在，但没有写出最终结果。")
+        print("不要自动重新调用。请把这个情况告诉用户，由用户决定是否重新发起。")
+        print("已有的输出在：%s（stdout.log / stderr.log）" % rdir)
+        sys.exit(11)
+    resp = os.path.join(rdir, "response.md")
+    try:
+        with open(resp, encoding="utf-8") as f:
+            print(scrub(f.read(), 12000))
+    except OSError:
+        print("没有找到结果文件：%s" % resp)
+    print("\n（完整结果：%s）" % resp)
+    if os.path.exists(os.path.join(rdir, "changes.diff")):
+        print("（改动差异：%s）" % os.path.join(rdir, "changes.diff"))
+    sys.exit(0 if state == "completed" else 12)
+
+
+def cmd_status(a):
+    root = project_root(a.cwd)
+    if a.run_id:
+        rdir = run_dir_of(root, a.run_id)
+        state, st = current_state(rdir)
+        print("%s：%s" % (a.run_id, STATE_CN.get(state, state)))
+        if st.get("error"):
+            print("问题：%s" % st["error"])
+        return
+    runs_dir = os.path.join(root, ".peer-review", "runs")
+    if not os.path.isdir(runs_dir):
+        print("这个项目还没有任何调用记录。")
+        return
+    for rid in sorted(os.listdir(runs_dir))[-10:]:
+        state, st = current_state(os.path.join(runs_dir, rid))
+        print("%s  %s" % (rid, STATE_CN.get(state, state)))
+
+
+# ---------------------------------------------------------------- 冻结
+def frozen_meta_path(frozen):
+    return re.sub(r"\.md$", "", frozen) + ".json"
+
+
+# 老大审阅技能（boss-review）的完成标记格式；不认识的一律拒绝
+REVIEW_COMMIT_SCHEMAS = ("boss-review-commit-v2",)
+
+
+def check_review_receipt(path, plan_sha):
+    """核对终审回执：三件齐全、指纹与完成标记一致、批准了方案当前版本。"""
+    if not path:
+        die("冻结前必须先终审：请用 --review-receipt 指定终审回执所在的事务目录"
+            "（老大审阅技能落档的 transactions/<submission_id>/）。没有终审回执就不能冻结。")
+    d = os.path.realpath(os.path.expanduser(path))
+    if os.path.isfile(d) and os.path.basename(d) in ("receipt.json", "receipt.md", "commit.json"):
+        d = os.path.dirname(d)
+    if not os.path.isdir(d):
+        die("终审回执目录不存在：%s" % d)
+    files = {n: os.path.join(d, n) for n in ("receipt.json", "receipt.md", "commit.json")}
+    missing = [n for n, p in files.items() if not os.path.isfile(p)]
+    if missing:
+        die("终审回执不完整，缺少：%s。回执还没定稿，不能冻结。" % "、".join(missing))
+    commit = read_json(files["commit.json"])
+    receipt = read_json(files["receipt.json"])
+    if not isinstance(commit, dict) or not isinstance(receipt, dict):
+        die("终审回执无法读取（commit.json 或 receipt.json 损坏）：%s" % d)
+    if commit.get("schema_version") not in REVIEW_COMMIT_SCHEMAS:
+        die("不认识的回执完成标记格式：%s（只接受 %s）。" % (commit.get("schema_version"), "、".join(REVIEW_COMMIT_SCHEMAS)))
+    if (commit.get("json_sha256") != sha256_file(files["receipt.json"])
+            or commit.get("markdown_sha256") != sha256_file(files["receipt.md"])):
+        die("回执文件和完成标记里的指纹不一致，回执可能在定稿后被改过：%s" % d)
+    sid = receipt.get("submission_id")
+    with open(files["receipt.md"], encoding="utf-8") as f:
+        md = f.read()
+    if not sid or sid != commit.get("submission_id") or sid not in md:
+        die("回执编号不一致：receipt.json、receipt.md、commit.json 的 submission_id 对不上。")
+    mode = (receipt.get("scope") or {}).get("mode")
+    if mode not in ("decision_only", "approve_execution"):
+        die("回执的范围不是 decision_only 或 approve_execution（实际：%s），不能作为终审。" % mode)
+    approved = [it for it in receipt.get("items") or []
+                if isinstance(it, dict) and it.get("decision") == "approve"
+                and plan_sha in (it.get("content") or "")]
+    if not approved:
+        die("终审回执里没有批准方案当前版本的条目：找不到写有方案当前 SHA-256（%s）的“采纳”条目。"
+            "终审后方案被改过，或这不是终审回执；请重新终审。" % plan_sha)
+    return {"review_receipt": d, "review_id": receipt.get("review_id"), "submission_id": sid,
+            "commit_sha256": sha256_file(files["commit.json"])}
+
+
+def cmd_freeze(a):
+    root = project_root(a.cwd)
+    plan = os.path.realpath(os.path.expanduser(a.plan))
+    if not os.path.isfile(plan):
+        die("方案文档不存在：%s" % plan)
+    if re.search(r"_冻结v\d{3}\.md$", plan):
+        die("这已经是冻结版文件，不能再冻结。请冻结原方案文档。")
+    with open(plan, "rb") as f:
+        data = f.read()
+    h = hashlib.sha256(data).hexdigest()
+    review = check_review_receipt(a.review_receipt, h)
+    d, fn = os.path.split(plan)
+    stem = re.sub(r"\.md$", "", fn)
+    n = 1
+    while os.path.exists(os.path.join(d, "%s_冻结v%03d.md" % (stem, n))):
+        n += 1
+    frozen = os.path.join(d, "%s_冻结v%03d.md" % (stem, n))
+    fd = os.open(frozen, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    snap = os.path.join(peer_dir(root), "freeze", "%s-v%03d" % (ts(), n))
+    m = snapshot(root, snap)
+    quote = re.sub(r"\s+", " ", (a.quote or "")).strip()[:300]
+    handoff = (
+        "这份方案已经由我终审并冻结。若用户授权实施，请严格按照它执行：\n"
+        "%s\n"
+        "内容指纹（SHA-256）：%s\n"
+        "终审回执：%s（review_id %s）\n"
+        "开始前先计算这个文件的 SHA-256，和上面不一致就停下告诉我。\n"
+        "执行范围以方案为准；方案里没写的删除、发布、付费操作一律不做；需要偏离方案时先停下来问我。\n"
+        "完成后把执行记录（改了哪些文件、做了哪些验证、遗留问题）追加到原方案文档末尾：\n%s\n"
+        % (frozen, h, review["review_receipt"], review["review_id"], plan))
+    hp = os.path.join(d, "%s_冻结v%03d_交接语.txt" % (stem, n))
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(handoff)
+    meta = {"frozen": frozen, "source": plan, "sha256": h, "version": n, "time": iso(),
+            "quote": quote, "project": root, "snapshot": snap, "handoff": hp,
+            "snapshot_files": len(m["entries"])}
+    meta.update(review)
+    write_json(frozen_meta_path(frozen), meta)
+    append_jsonl(os.path.join(root, ".peer-review", "freeze", "index.jsonl"), meta)
+    print("已冻结（第 %d 版）。" % n)
+    print("冻结版：%s" % frozen)
+    print("内容指纹：%s" % h)
+    print("项目快照：%s（%d 个文件）" % (snap, len(m["entries"])))
+    print("交接语文件：%s" % hp)
+    print("\n—— 交接语（可以直接复制到 Codex 或 Claude）——\n")
+    print(handoff)
+
+
+def load_frozen(path):
+    frozen = os.path.realpath(os.path.expanduser(path))
+    meta = read_json(frozen_meta_path(frozen))
+    if not meta:
+        die("找不到冻结记录：%s" % frozen_meta_path(frozen))
+    return frozen, meta
+
+
+def cmd_verify(a):
+    frozen, meta = load_frozen(a.frozen)
+    if not os.path.isfile(frozen):
+        die("冻结版文件不存在：%s" % frozen, 6)
+    h = sha256_file(frozen)
+    if h == meta["sha256"]:
+        print("一致：冻结版没有被改动（%s）。" % h[:12])
+    else:
+        print("不一致：冻结版在冻结后被改动过！记录的指纹 %s，现在 %s。请停止执行并告诉用户。" % (meta["sha256"][:12], h[:12]))
+        sys.exit(6)
+
+
+def cmd_since_freeze(a):
+    frozen, meta = load_frozen(a.frozen)
+    c = compare(meta["snapshot"], meta["project"])
+    md = changes_markdown(c, "冻结以来的改动")
+    stamp = ts()
+    mdp = os.path.join(meta["snapshot"], "changes-%s.md" % stamp)
+    dp = os.path.join(meta["snapshot"], "changes-%s.diff" % stamp)
+    with open(mdp, "w", encoding="utf-8") as f:
+        f.write(md)
+    with open(dp, "w", encoding="utf-8") as f:
+        f.write(c["diff"])
+    print(md)
+    print("（改动清单：%s）" % mdp)
+    print("（改动差异：%s）" % dp)
+
+
+# ---------------------------------------------------------------- doctor / stats
+def cmd_doctor(a):
+    cfg = load_config()
+    print("peer 自检")
+    print("- Python：%s（%s）" % (sys.version.split()[0], sys.executable))
+    print("- 配置文件：%s" % CONFIG_PATH)
+    active_stops = []
+    for p, label in [(STOP_LOCK_PATH, "全局"), (STOP_CODEX_PATH, "Codex"), (STOP_CLAUDE_PATH, "Claude")]:
+        if os.path.exists(p):
+            reason = ""
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    reason = f.read().strip()
+            except Exception:
+                pass
+            active_stops.append((p, label, reason))
+    if active_stops:
+        for p, label, reason in active_stops:
+            print("- %s熔断停机锁：%s（⚠️ 熔断中！原因：%s；严禁 Agent 自动删除，须由用户人工核实）" % (label, p, reason or "已锁定"))
+    else:
+        print("- 全局熔断停机锁：未触发（安全正常）")
+    if os.path.exists(IMAGE_COOLDOWN_PATH):
+        try:
+            with open(IMAGE_COOLDOWN_PATH, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            last_ts = float(cdata.get("timestamp", 0))
+            elapsed = time.time() - last_ts
+            print("- 生图冷却状态：最近出图 %s（距今 %.1f 秒）" % (cdata.get("time", "未知"), elapsed))
+        except Exception:
+            pass
+    proxy_val = cfg.get("proxy_check")
+    if proxy_val and isinstance(proxy_val, (list, tuple)) and len(proxy_val) == 2 and proxy_val[0]:
+        host, port = proxy_val
+        try:
+            socket.create_connection((host, int(port)), timeout=3).close()
+            print("- 代理 %s:%s：可连接" % (host, port))
+        except Exception as e:
+            print("- 代理 %s:%s：连不上（%s）—— 代理可能未启动" % (host, port, type(e).__name__))
+    else:
+        env_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY") or os.environ.get("http_proxy")
+        if env_proxy:
+            print("- 网络代理：已检测到环境变量（%s）" % env_proxy)
+        else:
+            print("- 网络代理：未配置固定代理检测（直接联网或使用系统默认路由）")
+    results = {}
+    for agent in ("codex", "claude"):
+        b = agent_bin(cfg, agent)
+        if not (os.path.isfile(b) and os.access(b, os.X_OK)):
+            print("- %s：找不到命令 %s" % (AGENT_NAMES[agent], b))
+            continue
+        code, out, err = run_quick([b, "--version"])
+        ver = (out or err).strip().splitlines()[0] if (out or err).strip() else "未知"
+        cat, desc = auth_state(cfg, agent)
+        results[agent] = cat
+        approved = cfg["approved_auth"].get(agent)
+        flag = "✅ 与已确认一致" if cat == approved else "⚠️ 与已确认（%s）不一致" % approved
+        print("- %s：%s；登录方式 %s（%s）%s" % (AGENT_NAMES[agent], ver, cat, desc, flag))
+        try:
+            me = resolve_model_effort(cfg, agent)
+            m_disp, e_disp, st_disp = describe_me(me)
+            st_part = ("；服务层级/模式：%s" % st_disp) if st_disp else ""
+            extra = ("；服务提供方：第三方/自定义 " + me["provider"]) if me.get("provider") else ""
+            print("    默认模型：%s；默认强度：%s%s%s" % (m_disp, e_disp, st_part, extra))
+        except PeerError as e:
+            print("    模型/强度/服务层级设置有问题：%s" % e)
+    if a.approve:
+        for agent, cat in results.items():
+            if cat == "unknown":
+                print("  %s 的登录方式无法识别，未记录。" % AGENT_NAMES[agent])
+                continue
+            cfg["approved_auth"][agent] = cat
+        save_config(cfg)
+        print("已把当前登录方式记为已确认。")
+
+
+def cmd_stats(a):
+    day = now().strftime("%Y-%m-%d")
+    tot = {"codex": {"input": 0, "cached": 0, "output": 0, "thinking": 0, "cost_usd": 0.0, "n": 0},
+           "claude": {"input": 0, "cached": 0, "output": 0, "thinking": 0, "cost_usd": 0.0, "n": 0}}
+    try:
+        with open(GLOBAL_LOG, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    j = json.loads(line)
+                except Exception:
+                    continue
+                if j.get("event") != "done" or not str(j.get("time", "")).startswith(day) or j.get("agent") not in tot:
+                    continue
+                u = j.get("usage") or {}
+                d = tot[j["agent"]]
+                d["n"] += 1
+                for k in ("input", "cached", "output", "thinking"):
+                    d[k] += int(u.get(k) or 0)
+                d["cost_usd"] += float(u.get("cost_usd") or 0)
+    except OSError:
+        pass
+    print("今天（%s）：" % day)
+    for agent in ("codex", "claude"):
+        d = tot[agent]
+        print("- %s：调用 %d 次（已结束 %d 次）；%s" % (
+            AGENT_NAMES[agent], today_count(agent), d["n"],
+            describe_usage({k: d[k] for k in ("input", "cached", "output", "thinking", "cost_usd")}) if d["n"] else "暂无用量记录"))
+
+
+# ---------------------------------------------------------------- 入口
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "_run":
+        rdir = sys.argv[2]
+        try:
+            cmd_run(rdir)
+        except Exception as e:
+            status_path = os.path.join(rdir, "status.json")
+            resp_path = os.path.join(rdir, "response.md")
+            write_json(status_path, {"state": "failed", "pid": os.getpid(), "error": "后台进程异常崩溃: %s" % e, "ended": iso()})
+            try:
+                with open(resp_path, "w", encoding="utf-8") as f:
+                    f.write("> [!CAUTION]\n> **【后台运行进程异常崩溃】** %s\n" % e)
+            except Exception:
+                pass
+            sys.exit(1)
+        return
+    p = argparse.ArgumentParser(prog="peer", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = p.add_subparsers(dest="cmd")
+    d = sp.add_parser("doctor"); d.add_argument("--approve", action="store_true")
+    k = sp.add_parser("ask")
+    k.add_argument("agent"); k.add_argument("kind")
+    k.add_argument("--request", required=True); k.add_argument("--cwd", required=True)
+    k.add_argument("--quote", default=""); k.add_argument("--add-dir", action="append")
+    k.add_argument("--caller", default="", help="调用方名称（如 Antigravity / Claude / Codex）")
+    k.add_argument("--foreground", action="store_true", help="在前台运行直到结束（后台方式不可用时使用）")
+    k.add_argument("--model", default="", help="本次临时指定模型")
+    k.add_argument("--effort", default="", help="本次临时指定强度")
+    k.add_argument("--service-tier", default="", help="本次临时指定服务层级/模式（如 default、flex）")
+    w = sp.add_parser("wait"); w.add_argument("run_id"); w.add_argument("--cwd", required=True)
+    w.add_argument("--timeout", type=int, default=540)
+    s = sp.add_parser("status"); s.add_argument("run_id", nargs="?"); s.add_argument("--cwd", required=True)
+    f = sp.add_parser("freeze"); f.add_argument("plan"); f.add_argument("--cwd", required=True); f.add_argument("--quote", default="")
+    f.add_argument("--review-receipt", default="", help="终审回执的事务目录（必填；老大审阅技能落档的 transactions/<submission_id>/）")
+    v = sp.add_parser("verify"); v.add_argument("frozen")
+    sf = sp.add_parser("since-freeze"); sf.add_argument("frozen")
+    sp.add_parser("stats")
+    a = p.parse_args()
+    try:
+        {"doctor": cmd_doctor, "ask": cmd_ask, "wait": cmd_wait, "status": cmd_status,
+         "freeze": cmd_freeze, "verify": cmd_verify, "since-freeze": cmd_since_freeze,
+         "stats": cmd_stats}.get(a.cmd, lambda _a: p.print_help())(a)
+    except PeerError as e:
+        die(str(e))
+
+
+if __name__ == "__main__":
+    main()

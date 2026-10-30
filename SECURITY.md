@@ -1,0 +1,56 @@
+# Security Model and Guidelines for PeerAgent
+
+Security and production safety are core design goals of PeerAgent. Because PeerAgent bridges multiple frontier agent CLIs running with terminal and file system access, it enforces strict boundaries.
+
+---
+
+## 1. Sandbox and Execution Modes
+
+PeerAgent strictly categorizes tasks into two permission tiers:
+
+### Read-Only Modes (`review`, `plan`, `advice`)
+* **Codex**: Executed with `--sandbox read-only`. Filesystem writes are physically prevented by the sandbox.
+* **Claude Code**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable.
+* **Guarantee**: A read-only review task will never modify your codebase or execute mutating shell commands.
+
+### Write Modes (`exec`, `image`)
+* **Explicit Human Quoting**: Write calls require `--quote "<Human Exact Command>"`. PeerAgent refuses to launch write actions based on vague inferences.
+* **Pre-Execution Snapshot**: Before any write task begins, PeerAgent creates an in-memory or filesystem snapshot of the target workspace (ignoring `.git`, `node_modules`, and virtual environments).
+* **Automated Diff Tracking**: When the write task finishes, PeerAgent diffs the workspace against the snapshot and generates `changes.diff` and `changes.md` for human review.
+* **Caution**: In `exec` mode, agents (specifically Claude Code) may execute shell commands permitted within its normal operating profile. Never launch untrusted code generation on sensitive production servers without human inspection.
+
+---
+
+## 2. Emergency STOP Circuit Breaker
+
+To protect your accounts against automated lockouts, IP bans, or runaway tasks, PeerAgent includes a physical circuit breaker:
+* **Detection**: Scans stderr and execution logs for critical patterns:
+  - Account suspension / deactivation
+  - Severe authentication errors (401 token revoked, refresh token invalidated)
+* **Action**: Immediately writes physical lock files:
+  - `$PEER_HOME/STOP` (Global halt)
+  - `$PEER_HOME/STOP-codex` (Codex-specific halt)
+  - `$PEER_HOME/STOP-claude` (Claude-specific halt)
+* **Zero AI Bypass Rule**: **No AI agent is ever allowed to delete or circumvent a STOP lock.** If triggered, human operator intervention is strictly required to verify the account status and remove the lock manually.
+
+---
+
+## 3. Anti-Recursion Loop Prevention
+
+To eliminate infinite invocation loops (Agent A calling Agent B, which calls Agent A again):
+* Every spawned child process inherits `PEER_DEPTH`.
+* If a process attempts to invoke `peer ask` while `PEER_DEPTH >= 1`, the invocation is immediately aborted with exit code `2`.
+
+---
+
+## 4. Sensitive Data and Secret Scrubbing
+
+* PeerAgent excludes sensitive files (`.env`, `*.pem`, `*.key`, `id_rsa`, `*token*.json`) from snapshot contents. Only SHA-256 fingerprints of these files are tracked to detect modifications.
+* Basic email scrubbing is performed on terminal output.
+* **Best Practice**: Never paste raw API keys or database passwords into task request prompts. Use environment variables or official CLI auth flows.
+
+---
+
+## 5. Reporting a Security Vulnerability
+
+If you discover a security issue or vulnerability in PeerAgent, please do NOT open a public GitHub issue. Instead, report it directly via GitHub Private Vulnerability Reporting or contact the maintainer directly.

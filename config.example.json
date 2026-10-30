@@ -1,0 +1,32 @@
+{
+  "bins": {
+    "claude": "claude",
+    "codex": "codex"
+  },
+  "models": {
+    "claude": "",
+    "codex": ""
+  },
+  "efforts": {
+    "claude": "",
+    "codex": "high"
+  },
+  "service_tiers": {
+    "codex": "default"
+  },
+  "follow_app_settings": true,
+  "approved_auth": {
+    "claude": "subscription",
+    "codex": "subscription"
+  },
+  "max_turns": {
+    "read": 20,
+    "write": 120
+  },
+  "timeout_minutes": {
+    "read": 30,
+    "write": 60
+  },
+  "proxy_check": null,
+  "codex_disable_apps": false
+}

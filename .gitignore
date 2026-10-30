@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# PeerAgent Runtime
+.peer-review/
+logs/
+*.lock
+*.log
+last_image_time.json
+STOP*
+config.json
+
+# OS and Editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
