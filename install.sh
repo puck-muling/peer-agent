@@ -22,13 +22,14 @@ EOF
 }
 
 usage() {
+  local code="${1:-0}"
   echo "用法: $0 [选项]"
   echo "选项:"
   echo "  --link       使用软链接安装（适合开发者，修改代码立即生效）"
   echo "  --copy       使用文件复制安装（默认方式）"
   echo "  --uninstall  卸载 PeerAgent 及相关技能配置（若有安装前备份将自动还原）"
   echo "  -h, --help   显示本帮助信息"
-  exit 0
+  exit "$code"
 }
 
 # 解析参数
@@ -37,14 +38,31 @@ while [[ $# -gt 0 ]]; do
     --link) MODE="link"; shift ;;
     --copy) MODE="copy"; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
-    -h|--help) usage ;;
-    *) echo "未知参数: $1" >&2; usage ;;
+    -h|--help) usage 0 ;;
+    *) echo "未知参数: $1" >&2; usage 2 ;;
   esac
 done
 
 safe_uninstall_skill() {
-  local dst="$1"
-  if [ -L "$dst" ] || [ -f "$dst" ]; then
+  local src="$1"
+  local dst="$2"
+  local is_our_file=0
+
+  if [ -L "$dst" ]; then
+    # 若是指向本仓库或同名 peer 技能的符号链接
+    local target
+    target="$(readlink "$dst" || true)"
+    if [[ "$target" == *"$SCRIPT_DIR"* ]] || [[ "$target" == *"peer"* ]]; then
+      is_our_file=1
+    fi
+  elif [ -f "$dst" ]; then
+    # 若内容与仓库一致，或包含 peer 特征标记
+    if cmp -s "$src" "$dst" 2>/dev/null || grep -q "PEER_HOME" "$dst" 2>/dev/null; then
+      is_our_file=1
+    fi
+  fi
+
+  if [ "$is_our_file" = "1" ]; then
     rm -f "$dst"
     local parent
     parent="$(dirname "$dst")"
@@ -56,18 +74,24 @@ safe_uninstall_skill() {
       echo "   还原备份技能: $(basename "$latest_bak") -> $base"
       mv "$latest_bak" "$dst"
     fi
+    rmdir "$(dirname "$dst")" 2>/dev/null || true
+  elif [ -e "$dst" ]; then
+    echo "   跳过非 PeerAgent 自建技能文件: $dst"
   fi
-  rmdir "$(dirname "$dst")" 2>/dev/null || true
 }
 
 uninstall_peer() {
   echo "正在卸载 PeerAgent..."
-  rm -f "$LOCAL_BIN/peer"
-  rm -f "$PEER_HOME/bin/peer"
-  safe_uninstall_skill "$HOME/.gemini/config/skills/codex/SKILL.md"
-  safe_uninstall_skill "$HOME/.gemini/config/skills/claude/SKILL.md"
-  safe_uninstall_skill "$HOME/.claude/skills/codex/SKILL.md"
-  safe_uninstall_skill "$HOME/.codex/skills/claude/SKILL.md"
+  if [ -L "$LOCAL_BIN/peer" ] || [ -f "$LOCAL_BIN/peer" ]; then
+    rm -f "$LOCAL_BIN/peer"
+  fi
+  if [ -L "$PEER_HOME/bin/peer" ] || [ -f "$PEER_HOME/bin/peer" ]; then
+    rm -f "$PEER_HOME/bin/peer"
+  fi
+  safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
+  safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
+  safe_uninstall_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
+  safe_uninstall_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
   echo "✅ 已移除技能链接与执行程序。保留 ~/.peer-review 历史数据。"
   exit 0
 }
@@ -135,11 +159,16 @@ if [ "$MODE" = "link" ]; then
   done
   echo "   已以符号链接模式安装核心工具。"
 else
+  rm -f "$PEER_HOME/bin/peer"
   cp -f "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer"
   chmod +x "$PEER_HOME/bin/peer"
+  rm -f "$LOCAL_BIN/peer"
   cp -f "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"
   chmod +x "$LOCAL_BIN/peer"
-  cp -f "$SCRIPT_DIR/templates"/*.md "$PEER_HOME/templates/"
+  for f in "$SCRIPT_DIR/templates"/*.md; do
+    rm -f "$PEER_HOME/templates/$(basename "$f")"
+    cp -f "$f" "$PEER_HOME/templates/"
+  done
   echo "   已复制核心二进制与审阅模板。"
 fi
 

@@ -279,7 +279,7 @@ class TestPeerExtended(unittest.TestCase):
             peer.CONFIG_PATH = orig_cfg_path
 
     def test_cli_smoke(self):
-        """测试 CLI 命令行入口响应 --help 与 stats"""
+        """测试 CLI 命令行入口响应 --help、--version 与 stats"""
         bin_path = os.path.join(REPO_DIR, "bin", "peer")
 
         # --help
@@ -288,6 +288,11 @@ class TestPeerExtended(unittest.TestCase):
         self.assertIn("peer", res.stdout)
         self.assertIn("doctor", res.stdout)
         self.assertIn("ask", res.stdout)
+
+        # --version
+        res_ver = subprocess.run([sys.executable, bin_path, "--version"], capture_output=True, text=True)
+        self.assertEqual(res_ver.returncode, 0)
+        self.assertIn("peer 0.1.0", res_ver.stdout)
 
         # stats
         res_stats = subprocess.run([sys.executable, bin_path, "stats"], capture_output=True, text=True)
@@ -306,7 +311,7 @@ class TestPeerExtended(unittest.TestCase):
         self.assertIn('script-files = ["bin/peer"]', content)
 
     def test_standalone_freeze_and_verify(self):
-        """测试无需外部回执的独立方案冻结与指纹校验功能"""
+        """测试无需外部回执的独立方案冻结、交接语及防篡改校验功能"""
         proj = os.path.join(self.test_dir, "freeze_proj")
         os.makedirs(proj, exist_ok=True)
         plan_file = os.path.join(proj, "architecture_plan.md")
@@ -327,12 +332,23 @@ class TestPeerExtended(unittest.TestCase):
         handoff_file = os.path.join(proj, "architecture_plan_冻结v001_交接语.txt")
         self.assertTrue(os.path.exists(frozen_file))
         self.assertTrue(os.path.exists(handoff_file))
+        with open(handoff_file, "r", encoding="utf-8") as f:
+            handoff_content = f.read()
+        self.assertIn("独立模式，未附外部终审回执", handoff_content)
 
         # 校验 verify 命令
         class VerifyArgs:
             frozen = frozen_file
 
+        # 未被修改时 verify 正常通过
         peer.cmd_verify(VerifyArgs)
+
+        # 篡改冻结文件，verify 必须抛出 SystemExit(6) 阻断执行
+        with open(frozen_file, "a", encoding="utf-8") as f:
+            f.write("tampered line\n")
+        with self.assertRaises(SystemExit) as cm:
+            peer.cmd_verify(VerifyArgs)
+        self.assertEqual(cm.exception.code, 6)
 
 
 if __name__ == "__main__":

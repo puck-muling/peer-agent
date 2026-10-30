@@ -46,21 +46,29 @@ if not peer_bin:
 
 # 1. 优先通过 peer 调度（享有快照、diff 与统一熔断保护）
 if peer_bin:
-    # 意图识别分发
+    # 意图识别分发（防误升级：只读、方案、评估、建议优先）
     has_readonly = any(w in task_prompt for w in [
         "只读", "仅查看", "仅分析", "仅排查", "仅审阅", "只审阅",
         "无需修改", "不要修改", "不得修改", "严禁修改", "禁止修改", "请勿修改"
     ])
-    clean_prompt = re.sub(r"(不得|严禁|不要|禁止|不可|避免|不需要|请勿|勿|别)[\u4e00-\u9fa5]{0,10}(修改|编辑|写入|改动|变更|创建|新建|重构|编写|删除)", "", task_prompt)
-    has_write = any(w in clean_prompt for w in ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "删除"])
-    is_write = has_write and not has_readonly
+    has_plan = any(w in task_prompt for w in ["方案", "计划", "怎么做", "设计", "架构", "思路", "评估", "评估是否"])
+    has_advice = any(w in task_prompt for w in ["建议", "结论", "为什么", "分析", "看看", "如何"])
+    has_review = any(w in task_prompt for w in ["审阅", "review", "审查", "检查", "排查", "挑刺", "验收"])
 
-    kind = "exec" if is_write else "review"
-    if not is_write:
-        if any(w in task_prompt for w in ["方案", "计划", "怎么做"]):
-            kind = "plan"
-        elif any(w in task_prompt for w in ["建议", "结论", "为什么"]):
-            kind = "advice"
+    clean_prompt = re.sub(r"(不得|严禁|不要|禁止|不可|避免|不需要|请勿|勿|别|评估|是否)[\u4e00-\u9fa5]{0,10}(修改|编辑|写入|改动|变更|创建|新建|重构|编写|删除)", "", task_prompt)
+    has_write = any(w in clean_prompt for w in ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "删除"])
+
+    # 只有明确要求执行/修改，且不属于方案、审阅、建议或只读时，才进入可写 exec
+    is_write = has_write and not (has_readonly or has_plan or has_advice or has_review)
+
+    if is_write:
+        kind = "exec"
+    elif has_plan:
+        kind = "plan"
+    elif has_advice:
+        kind = "advice"
+    else:
+        kind = "review"
 
     # 落盘请求文件
     req_dir = workdir / ".peer-review" / "requests"

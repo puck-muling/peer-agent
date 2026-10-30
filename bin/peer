@@ -49,6 +49,7 @@ import threading
 import time
 
 # ---------------------------------------------------------------- 基本设置
+VERSION = "0.1.0"
 HOME = os.path.expanduser("~")
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PEER_HOME = os.environ.get("PEER_HOME") or os.path.join(HOME, ".peer-review")
@@ -1779,18 +1780,22 @@ def cmd_freeze(a):
     fd = os.open(frozen, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
-    snap = os.path.join(peer_dir(root), "freeze", "%s-v%03d" % (ts(), n))
+    snap = os.path.join(peer_dir(root), "freeze", "%s-%s-v%03d" % (ts(), stem[:24], n))
     m = snapshot(root, snap)
     quote = re.sub(r"\s+", " ", (a.quote or "")).strip()[:300]
+    if a.review_receipt:
+        header_text = "这份方案已经由我终审并冻结。若用户授权实施，请严格按照它执行："
+    else:
+        header_text = "这份方案已按内容指纹固化（独立模式，未附外部终审回执）。若用户授权实施，请严格按照它执行："
     handoff = (
-        "这份方案已经由我终审并冻结。若用户授权实施，请严格按照它执行：\n"
+        "%s\n"
         "%s\n"
         "内容指纹（SHA-256）：%s\n"
         "%s"
         "开始前先计算这个文件的 SHA-256，和上面不一致就停下告诉我。\n"
         "执行范围以方案为准；方案里没写的删除、发布、付费操作一律不做；需要偏离方案时先停下来问我。\n"
         "完成后把执行记录（改了哪些文件、做了哪些验证、遗留问题）追加到原方案文档末尾：\n%s\n"
-        % (frozen, h, receipt_line, plan))
+        % (header_text, frozen, h, receipt_line, plan))
     hp = os.path.join(d, "%s_冻结v%03d_交接语.txt" % (stem, n))
     with open(hp, "w", encoding="utf-8") as f:
         f.write(handoff)
@@ -1977,6 +1982,7 @@ def main():
             sys.exit(1)
         return
     p = argparse.ArgumentParser(prog="peer", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("-v", "--version", action="version", version="%(prog)s " + VERSION)
     sp = p.add_subparsers(dest="cmd")
     d = sp.add_parser("doctor"); d.add_argument("--approve", action="store_true")
     k = sp.add_parser("ask")
