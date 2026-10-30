@@ -1,38 +1,136 @@
 # PeerAgent 🤝
 
-> **Make Claude Code and Codex review each other — without fake consensus.**  
+> **Get a second model to review your code — without echo chambers or extra token bills.**  
 > *A lightweight, subscription-native, decentralized multi-agent mesh for developers.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/puck-muling/peer-agent)
 
-[中文文档 (README_CN.md)](./README_CN.md) | [Security Model](./SECURITY.md) | [Architecture Guide](./docs/architecture.md)
-
----
-
-## 👶 TL;DR: What is PeerAgent in Plain English?
-
-If you write code with **Claude Code**, **ChatGPT (Codex CLI)**, or **Antigravity**, you know the drill:
-* One model generates 200 lines of code, and you wonder: *"Did it hallucinate a subtle bug or race condition?"*
-* You want a second model to double-check it, so you manually **copy, switch terminals, paste, and ask** back and forth.
-* Existing multi-agent frameworks force you to pay hefty API key token bills, ignoring your already-paid Claude Pro or ChatGPT Plus memberships.
-
-**PeerAgent gives you an instant AI pairing partner without the hassle:**
-* 🗣️ **One-Command Cross-Invocation**: Typing `/codex review` inside Claude Code automatically wakes up Codex in the background to review your code and return file:line citations right in your Claude terminal.
-* 💰 **Zero Extra Bills**: Uses your existing official CLI logins (Claude Pro, ChatGPT Plus/Team). No API keys required.
-* 🛡️ **Safe & Read-Only**: Code reviews run in strict read-only sandboxes. Your workspace is automatically snapshotted before any approved edits.
+[中文文档 (README_CN.md)](./README_CN.md) | [Security Model (SECURITY.md)](./SECURITY.md) | [Architecture Guide (architecture.md)](./docs/architecture.md)
 
 ---
 
-## 💡 Why PeerAgent?
+## 👶 10-Second Explainer: What does it do?
 
-Current multi-agent frameworks (CrewAI, AutoGen, LangGraph) share three glaring pain points:
-1. **Expensive API Bills**: They require direct API keys, burning hundreds of dollars in raw token costs instead of leveraging your existing subscriptions (ChatGPT Plus/Team, Claude Pro/Team).
-2. **Disconnected from Reality**: They run in abstract Python loops, isolated from your real IDE context, native terminal sandboxes, and official developer tools.
-3. **The "Echo Chamber" (Fake Consensus)**: When Agent A proposes a flawed design, Agent B typically flatters it, creating an illusion of agreement without actually verifying ground-truth code.
+If you write code with **Claude Code**, **Codex CLI**, or **Google Antigravity**, you know these familiar frustrations:
+* One model generates 200 lines of code, and you wonder: *"Did it introduce subtle edge-case bugs or regression errors?"*
+* You want a second model to double-check it, so you manually **copy code → switch terminals → paste prompt → bring conclusions back** across multiple tedious rounds.
+* Existing multi-agent frameworks require custom API keys, incurring expensive pay-per-token API bills instead of using your already-active Pro/Team subscriptions.
 
-**PeerAgent flips the script.** It acts as a lightweight, decentralized Unix glue between your favorite developer tools: **Google Antigravity (Gemini)**, **Anthropic Claude Code**, and **OpenAI Codex CLI**.
+**With PeerAgent, you get an instant AI pairing partner right in your current terminal:**
+
+* 🗣️ **Cross-invoke with a single slash command**: While working in Claude Code, type `/codex check my recent changes`. Codex spins up in the background and prints file:line citations directly on your screen. Conversely, type `/claude` inside Codex to have Claude review your work.
+* 💰 **Subscription-Native**: Drives your locally authenticated official CLIs, consuming your existing ChatGPT Plus/Team or Claude Pro/Team subscription allowances. No extra API keys needed.
+* 🛡️ **Strictly Read-Only by Default**: Code reviews run in strict read-only sandboxes. Filesystem modifications are physically prevented; editable tasks require explicit human authorization and are guarded by automated **pre/post workspace snapshot diffs**.
+
+### Before vs. After PeerAgent
+
+| Dimension | The Manual Way | With PeerAgent |
+| :--- | :--- | :--- |
+| **Cross-Model Review** | Copy code → switch window → paste prompt → copy conclusions back | **Direct from current session**: run `/codex` or `/claude`; findings return inline |
+| **Billing & Cost** | API frameworks charge per token, racking up costs for long contexts | **Uses local CLI logins**: utilizes existing subscription allowances |
+| **Reviewer Independence** | Placing models in the same prompt leads to sycophancy ("looks great!") | **Evidence-first protocol**: previous assumptions are kept separate; code facts checked first |
+| **Safety & Blast Radius** | Risk of autonomous agents overwriting or deleting project files | **Read-only sandbox + recursion blocker + snapshot diffs** |
+
+---
+
+## 🚀 30-Second Quick Start
+
+### 1. Prerequisites
+* **Operating System**: macOS or Linux (Windows users should use WSL2).
+* **Python**: Python 3.10+ (pure standard library; zero third-party `pip` dependencies).
+* **Official CLIs (install and sign in as needed)**:
+  * **Claude Code**: `npm install -g @anthropic-ai/claude-code && claude auth login`
+  * **OpenAI Codex CLI**: Installed and signed in (ChatGPT Plus/Team subscription supported)
+  * **Google Antigravity**: Installed (optional, for IDE-based invocations)
+  > [!TIP]
+  > You only need the tools you intend to use. For example, to call Codex from Claude Code, you only need `claude` and `codex` installed and authenticated.
+
+### 2. One-Line Installation
+
+```bash
+git clone https://github.com/puck-muling/peer-agent.git
+cd peer-agent
+./install.sh
+```
+
+> [!NOTE]
+> The installer installs the core binary into `~/.local/bin/peer` and registers slash commands under `~/.claude`, `~/.codex`, and `~/.gemini`.  
+> Please ensure `~/.local/bin` is in your `PATH`.
+
+### 3. Verification
+
+```bash
+peer doctor
+```
+If all checks pass, your system is ready!
+
+### 4. Run Your First Cross-Model Review
+
+Inside your **Claude Code** terminal, type:
+```text
+/codex Review recent changes in the workspace for logic flaws. Read-only review, do not modify files.
+```
+Codex will run in the background in a read-only sandbox. Within seconds, an independent review report citing exact file lines, impact, and recommendations will be returned directly into your conversation!
+
+---
+
+## 🎯 Three High-Frequency Scenarios
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    Everyday Developer Flows                 │
+  │                                                             │
+  │   1. Pre-Commit         2. Post-Refactor      3. Design Spec│
+  │   [Catch Regressions]   [Find Broken Callers] [Check Facts] │
+  │        │                     │                     │        │
+  │        ▼                     ▼                     ▼        │
+  │   /codex on git diff    /claude on signatures /codex verify │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+### Scenario 1: Pre-Commit Regression Check
+Inside Claude Code, call Codex as an independent gatekeeper before committing:
+```text
+/codex Review the current git diff, focusing on authentication checks, race conditions, and error handling. Read-only only.
+```
+
+### Scenario 2: Post-Refactor Audit
+Inside Codex, after refactoring a shared module, have Claude check call sites:
+```text
+/claude Review the refactored auth module and verify if all callers across the repository match the updated return signature.
+```
+
+### Scenario 3: Pre-Implementation Ground-Truth Review
+Inside Antigravity or terminal before executing a large architectural proposal:
+```text
+/codex Conduct an independent review of this proposal. First verify whether cited files and line numbers actually exist, then highlight potential risks.
+```
+
+---
+
+## 🛡️ Trust & Safety: Four Core Guardrails
+
+PeerAgent was built from the ground up with defensive engineering principles:
+
+1. **Strict Read-Only Enforcement**:  
+   Review tasks (`review`, `plan`, `advice`) are locked into read-only sandboxes (Codex runs with `--sandbox read-only`; Claude runs with modification tools stripped and sandboxed Bash). Modifying project files is physically prevented.
+2. **Anti-Recursion Taint Tracking (`PEER_DEPTH`)**:  
+   Spawned processes inherit depth environment variables. If Agent A calls Agent B, and Agent B attempts to call Agent A back, invocation is physically halted at the OS level, eliminating infinite looping.
+3. **Emergency STOP Circuit Breaker**:  
+   Scans error streams for account deactivation or suspension patterns. If fatal errors occur, a physical lock file (`~/.peer-review/STOP`) is written to freeze further automated calls. **AI agents are strictly forbidden from auto-recovering or deleting this lock**; human operator inspection is required. *(Note: Standard 401 token expirations prompt re-authentication and do not lock the system).*
+4. **Workspace Snapshot & Diff Tracking**:  
+   For explicitly authorized write tasks (`exec`), PeerAgent snapshots the workspace beforehand and generates a Unified Diff report upon completion, making all edits fully transparent.
+
+---
+
+## 📦 Advanced Features & Architecture
+
+<details>
+<summary><b>1. Architecture & Invocation Topology</b></summary>
+
+PeerAgent implements a decentralized peer-to-peer (P2P) mesh without any persistent orchestrator daemon:
 
 ```mermaid
 graph TD
@@ -44,95 +142,47 @@ graph TD
     CC <-->|peer ask / peer wait| Router
     CX <-->|peer ask / peer wait| Router
 
-    Router --> Sandbox["🛡️ Safety & Governance Layer\n• Double-Blind Review\n• Anti-Loop Taint (PEER_DEPTH)\n• STOP Circuit Breaker\n• Snapshot & Diff"]
+    Router --> Sandbox["🛡️ Safety & Governance Layer\n• Evidence-First Review Protocol\n• Anti-Loop Taint (PEER_DEPTH)\n• STOP Circuit Breaker\n• Snapshot & Diff"]
 ```
 
----
+Every endpoint functions as both an invocation client and an expert reviewer. Read more in [Architecture Guide (docs/architecture.md)](./docs/architecture.md).
+</details>
 
-## ⚡ Key Highlights
+<details>
+<summary><b>2. Direct Terminal CLI Usage</b></summary>
 
-* **💰 Zero Extra API Billing (Subscription-Native)**: Directly drives official, locally logged-in CLIs (`claude -p`, `codex exec`). Uses your existing Pro/Team memberships without paying double for API credits.
-* **🌐 Decentralized Mesh (P2P)**: No central master daemon. Call `/codex` from inside Claude Code, `/claude` from inside Codex, or call either from Antigravity. Any agent can act as both caller and expert reviewer.
-* **🔍 Double-Blind Review Protocol**: Reviewers are forbidden from accessing previous intermediate outputs. The task specification forces ground-truth evidence (file:line, git diff) to the top: reviewers must verify code premises before examining proposals.
-* **🔄 Anti-Recursion Taint Tracking (`PEER_DEPTH`)**: Propagates process depth markers. If Agent A calls Agent B, Agent B is physically blocked from recursively calling Agent A back, eliminating token-draining infinite loops.
-* **🛑 Emergency STOP Circuit Breaker**: Scans for fatal account warnings, ban patterns, or 401 token revocations. Immediately writes a physical `STOP` lock and halts execution. **Agents are strictly forbidden from auto-recovering locks**; only humans can review and release.
-* **📸 Snapshot & Diff Tracking**: Read-only modes (`review`, `plan`, `advice`) are locked in strict sandboxes. Write modes (`exec`, `image`) require explicit human quotes and automatically snapshot the workspace, generating detailed `changes.diff` upon completion.
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-* macOS or Linux (WSL on Windows supported; native Windows unsupported due to POSIX `fcntl` file locks)
-* Python 3.10+
-* At least one of the official CLIs installed and authenticated:
-  * [Claude Code](https://docs.anthropic.com/en/docs/claude-code): `npm install -g @anthropic-ai/claude-code && claude login`
-  * [OpenAI Codex CLI](https://platform.openai.com/docs): Installed and authenticated via ChatGPT subscription.
-  * [Google Antigravity](https://deepmind.google/): Installed and configured.
-
-### One-Line Installation
+In addition to interactive slash commands, you can invoke `peer` directly from any shell or automation script:
 
 ```bash
-git clone https://github.com/puck-muling/peer-agent.git
-cd peer-agent
-./install.sh
-```
-
-To install in developer mode (using symlinks so your edits take effect immediately):
-```bash
-./install.sh --link
-```
-
-Verify your installation:
-```bash
+# 1. Run diagnostic self-check
 peer doctor
+
+# 2. Launch an asynchronous read-only review
+peer ask codex review --request ./task.md --cwd .
+
+# 3. Check status of a pending run
+peer status <RUN_ID> --cwd .
+
+# 4. Wait for completion and view report & diff
+peer wait <RUN_ID> --cwd .
+
+# 5. Inspect call stats and token volume
+peer stats
 ```
+</details>
 
----
+<details>
+<summary><b>3. Plan Fingerprinting & Human-in-the-Loop Governance</b></summary>
 
-## 📖 How to Use
+For high-stakes refactoring, PeerAgent follows the **"Human as Host"** principle:
+* One agent drafts an initial proposal (`plan`);
+* The second agent independently verifies code premises and provides review feedback (`review`);
+* The user reviews all points and selects actions;
+* Running `peer freeze <plan.md> --cwd .` computes and locks the SHA-256 fingerprint, guaranteeing that subsequent execution stays strictly within the approved boundary.
+</details>
 
-### 1. In Google Antigravity
-Type in your chat prompt:
-```text
-/codex Review the authentication logic in src/auth.py and check for race conditions
-/claude Help design a clean cache invalidation strategy for redis_cache.py
-/codex image Draw an architectural poster of our multi-agent workflow
-```
-
-### 2. In Claude Code CLI
-Inside your Claude Code terminal, simply trigger the slash command:
-```text
-/codex Check if my recent changes in git diff introduce any regression bugs
-/codex advice Why is the database connection pool timing out under high concurrency?
-```
-
-### 3. In OpenAI Codex CLI
-Inside your Codex conversation:
-```text
-/claude Review the refactored React component and check for unnecessary re-renders
-```
-
----
-
-## 🛡️ Governance Workflow (Human in the Loop)
-
-PeerAgent follows the **"Human as the Host"** doctrine. AI agents propose, inspect, and verify; **humans decide**.
-
-```text
-1. Propose Plan   ──> /codex plan <feature>
-2. Cross-Review   ──> /claude review <proposal> (Independently verifies ground-truth)
-3. Synthesize     ──> Combine all findings into itemized points (S01, S02...)
-4. Boss-Review ①  ──> Human selectively approves / rejects / modifies each point
-5. Freeze Hash    ──> peer freeze <plan.md> (Calculates SHA-256 fingerprint)
-6. Execute        ──> peer verify & peer ask <agent> exec (Strictly within frozen scope)
-```
-
----
-
-## ⚙️ Configuration & Direct CLI
-
-PeerAgent stores user settings in `~/.peer-review/config.json`. A default template is generated on install:
+<details>
+<summary><b>4. Configuration Reference (~/.peer-review/config.json)</b></summary>
 
 ```json
 {
@@ -162,57 +212,50 @@ PeerAgent stores user settings in `~/.peer-review/config.json`. A default templa
   }
 }
 ```
-
-You can also use the `peer` CLI directly from your terminal:
-```bash
-# System diagnostic & auth check
-peer doctor
-
-# Launch an asynchronous read-only review
-peer ask codex review --request ./task.md --cwd .
-
-# Wait for completion & view diff
-peer wait <RUN_ID> --cwd .
-
-# View daily call statistics and token volume
-peer stats
-```
+</details>
 
 ---
 
 ## ❓ Frequently Asked Questions (FAQ)
 
 <details>
-<summary><b>1. Does PeerAgent charge my OpenAI / Anthropic API keys?</b></summary>
-No. PeerAgent executes the official local CLIs (`codex`, `claude`) using your existing interactive subscription logins (ChatGPT Plus/Team, Claude Pro/Team). If you prefer using pay-as-you-go API keys, you can configure them, but subscriptions are supported out of the box.
+<summary><b>1. Does PeerAgent charge my commercial API keys?</b></summary>
+
+By default, no. PeerAgent drives your locally installed and authenticated official CLIs (`claude`, `codex`). When signed in via interactive subscriptions (e.g. ChatGPT Plus/Team or Claude Pro/Team), it utilizes those existing subscription allowances. Usage terms and rate limits are governed by the respective providers.
 </details>
 
 <details>
-<summary><b>2. What happens if an agent triggers a rate limit or account issue?</b></summary>
-If fatal account issues (such as suspension warnings) are detected, PeerAgent halts immediately and drops a physical `STOP` lock file in `~/.peer-review/STOP`. AI agents are strictly blocked from deleting this lock file; only a human operator can verify the account and remove the lock.
+<summary><b>2. What should I do if a "Circuit breaker STOP lock active" error appears?</b></summary>
+
+If critical account suspension patterns are detected, PeerAgent writes a `STOP` or `STOP-<agent>` file in `~/.peer-review/`.  
+**Resolution Steps**:
+1. Check the exact lock file path reported in the output;
+2. Verify why it occurred and confirm the health and auth status of the underlying CLI;
+3. Once verified, manually delete the specific lock file (e.g. `rm ~/.peer-review/STOP-codex`). Avoid using wildcard deletion.
 </details>
 
 <details>
 <summary><b>3. Why is native Windows unsupported?</b></summary>
-PeerAgent relies on POSIX-compliant process group signaling (`os.killpg`) and Unix advisory file locking (`fcntl.flock`) for cross-process concurrency safety. Windows users are strongly encouraged to run inside **WSL2** (Windows Subsystem for Linux).
+
+PeerAgent relies on POSIX file locking (`fcntl.flock`) and process group signal management (`os.killpg`) to guarantee safe cross-process concurrency and cleanup. Windows users should run inside **WSL2** (Windows Subsystem for Linux).
 </details>
 
 ---
 
-## ⚖️ Architecture Comparison
+## ⚖️ Objective Comparison
 
-| Feature | PeerAgent | LangGraph / CrewAI | Single-Model CLI | Local MCP Bridges |
-| :--- | :---: | :---: | :---: | :---: |
-| **Billing Model** | **Subscription-Native ($0 extra)** | Pay-per-token API | Subscription | Subscription |
-| **Multi-Model Cross-Check** | **Yes (P2P Mesh)** | Central Orchestrator | No (Single model) | Fragile sockets |
-| **Anti-Fake Consensus Protocol** | **Yes (Double-Blind)** | No | N/A | No |
-| **Infinite Loop Prevention** | **Yes (`PEER_DEPTH` Taint)** | Turn limit | N/A | No |
-| **Safety Circuit Breaker** | **Yes (STOP Lock)** | No | No | No |
-| **Workspace Snapshot & Diff** | **Yes (Automatic)** | No | Native git | No |
-| **Zero Heavy Dependencies** | **Yes (Python Standard Lib)** | Heavy packages | Standalone | Node/Docker |
+| Dimension | Manual Transfer | Commercial API Frameworks (LangGraph, CrewAI) | PeerAgent |
+| :--- | :--- | :--- | :--- |
+| **Workflow** | Manually copy text, switch windows, paste prompt, bring findings back | Requires custom orchestration scripts or server daemons | **One slash command in current terminal; results return in place** |
+| **Billing Model** | Native subscriptions (manual effort) | Pay-per-token commercial API keys required | **Drives local official CLIs; uses existing subscriptions** |
+| **Dependencies** | None | Multiple heavy Python or Node packages | **Pure Python 3.10+ standard library; zero external dependencies** |
+| **Review Isolation** | Relies entirely on manual filtering | Requires custom isolation pipelines | **Evidence-first protocol; ground-truth code verified before proposals** |
+| **Recursion Prevention**| Manual intervention | Turn-counter limits only | **OS-level `PEER_DEPTH` environment taint; physical cutoff** |
+| **Safety Circuit Breaker** | None | Typically relies on unhandled exceptions | **Physical `STOP` lock files; blocks AI auto-recovery** |
 
 ---
 
-## 📄 License
+## 📄 License & Security
 
-PeerAgent is released under the [MIT License](./LICENSE).
+Released under the [MIT License](./LICENSE).  
+For detailed information on sandbox boundaries, authentication policies, and vulnerability reporting, please review the [Security Policy (SECURITY.md)](./SECURITY.md).

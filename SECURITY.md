@@ -11,11 +11,11 @@ PeerAgent strictly categorizes tasks into two permission tiers:
 ### Read-Only Modes (`review`, `plan`, `advice`)
 * **Codex**: Executed with `--sandbox read-only`. Filesystem writes are physically prevented by the sandbox.
 * **Claude Code**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable.
-* **Guarantee**: A read-only review task will never modify your codebase or execute mutating shell commands.
+* **Guarantee**: A read-only review task operates under strict read-only constraints to inspect and report findings without mutating project files.
 
 ### Write Modes (`exec`, `image`)
 * **Explicit Human Quoting**: Write calls require `--quote "<Human Exact Command>"`. PeerAgent refuses to launch write actions based on vague inferences.
-* **Pre-Execution Snapshot**: Before any write task begins, PeerAgent creates an in-memory or filesystem snapshot of the target workspace (ignoring `.git`, `node_modules`, and virtual environments).
+* **Pre-Execution Snapshot**: Before any write task begins, PeerAgent records an in-memory/filesystem snapshot of text files (up to 1MB each) in the target workspace, intentionally excluding `.git`, `node_modules`, `venv`, binary files, and sensitive credentials (`.env`, `*.key`, etc.). This acts as a targeted change-tracking baseline rather than a complete disk backup.
 * **Automated Diff Tracking**: When the write task finishes, PeerAgent diffs the workspace against the snapshot and generates `changes.diff` and `changes.md` for human review.
 * **Caution**: In `exec` mode, agents (specifically Claude Code) may execute shell commands permitted within its normal operating profile. Never launch untrusted code generation on sensitive production servers without human inspection.
 
@@ -30,7 +30,7 @@ To protect your accounts against automated lockouts, IP bans, or runaway tasks, 
   - **Zero AI Bypass Rule**: **No AI agent is ever allowed to delete or circumvent a STOP lock.** If triggered, human operator intervention is strictly required to verify the account status and remove the lock manually.
 * **Authentication Expiration (`relogin`)**:
   - Detects 401 Unauthorized, token revocation, or refresh token invalidation (`AUTH_RELOGIN_PATTERNS`).
-  - Halts the task immediately without dropping a permanent lock, and prompts the user to re-authenticate manually in the respective CLI (`claude login` or `codex`).
+  - Halts the task immediately without dropping a permanent lock, and prompts the user to re-authenticate manually in the respective CLI (`claude auth login` or `codex`).
 * **Pre-Flight Lock Check**:
   - Before spawning any agent process or executing queued jobs, PeerAgent checks for the presence of active STOP locks and refuses execution if found.
 
@@ -54,4 +54,4 @@ To eliminate infinite invocation loops (Agent A calling Agent B, which calls Age
 
 ## 5. Reporting a Security Vulnerability
 
-If you discover a security issue or vulnerability in PeerAgent, please do NOT open a public GitHub issue. Instead, report it directly via GitHub Private Vulnerability Reporting or contact the maintainer directly.
+If you discover a security issue or vulnerability in PeerAgent, please do NOT open a public GitHub issue. Instead, report it confidentially via GitHub Security Advisories at [puck-muling/peer-agent/security/advisories](https://github.com/puck-muling/peer-agent/security/advisories).

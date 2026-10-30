@@ -1,47 +1,142 @@
-# PeerAgent 🤝（对等代理协作系统）
+# PeerAgent 🤝
 
-> **让 Claude Code 与 Codex 互相审阅代码 —— 拒绝虚假共识。**  
-> *专为开发者打造的去中心化、零额外 API 账单、订阅原生的跨端多智能体协作网格。*
+> **让 Claude Code 与 Codex 帮彼此审代码 —— 拒绝附和，查验真实事实。**  
+> *专为开发者打造的轻量级、订阅原生、跨端多智能体对等协作网格。*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/puck-muling/peer-agent)
 
-[English Document (README.md)](./README.md) | [安全模型声明](./SECURITY.md)
-
----
-
-## 👶 10秒看懂：这到底是个什么工具？（小白必读）
-
-如果你平时在用 **Claude Code**、**ChatGPT (Codex CLI)** 或 **Antigravity** 写代码，你一定遇到过这些场景：
-* 每次让 AI 帮写了一大段代码，心里总打鼓：“这里面会不会有坑？逻辑到底对不对？”
-* 想让另一个大模型帮忙挑刺把关，只能痛苦地**复制代码、切终端、粘贴、发问**，来回折腾好几轮；
-* 试过网上的 Multi-Agent（多智能体）开源框架，动不动就要填 API Key，跑一次交叉审阅几十块钱就扣没了……
-
-**装上 PeerAgent 之后，你的电脑就像有了两个随时互相挑刺的顶级 AI 程序员同事：**
-
-* 🗣️ **一句话呼叫对方**：你在 Claude Code 终端写代码时，直接敲 `/codex 帮我检查这段代码`，Codex 就会在后台调起来帮你审查代码行号并直接把结果打在屏幕上；反过来，在 Codex 里敲 `/claude` 就能让 Claude 来审阅。
-* 💰 **零额外 API 账单**：直接驱动你电脑上已有的 Claude Pro 或 ChatGPT Plus 网页会员登录态，**不需要充值任何商业 API Token，不花一分额外费用**！
-* 🛡️ **安全不踩坑**：审阅模式全走**只读沙箱**，绝不乱碰你的代码；只有你明确点头同意修改时，它才会改，而且改动前会自动帮你做**快照备份**。
-
-> 💡 **简单来说**：它是一个轻量级工具，让你的多个 AI 助手学会“串门聊天与互相找茬”，帮你把关代码质量，而你只需要像架构师一样看汇报、做决定！
+[English Document (README.md)](./README.md) | [安全模型声明 (SECURITY.md)](./SECURITY.md) | [架构设计详解 (architecture.md)](./docs/architecture.md)
 
 ---
 
-## 💡 为什么需要 PeerAgent？
+## 👶 10秒看懂：它能帮你做什么？
 
-当前市面上的多智能体框架（如 CrewAI、AutoGen、LangGraph）在工程实践中常遇到三个痛点：
-1. **API 账单昂贵**：跑一次复杂的多方交叉审阅动辄消耗数十万 Token 的商业 API，无法利用开发者已付费的官方会员（ChatGPT Plus/Team、Claude Pro/Team 订阅）。
-2. **脱离真实开发环境**：在抽象的云端沙盒或 Python 循环里跑代码，拿不到 IDE 的上下文、官方 CLI 原生工具和本机环境。
-3. **“商业互吹”（虚假共识）**：当 Agent A 提出一个存在隐患的方案，Agent B 往往习惯性附和与夸赞，缺乏去查验真实底层代码事实的机制。
+如果你平时在用 **Claude Code**、**Codex CLI** 或 **Google Antigravity** 写代码，你一定经历过这些痛点：
+* 每次让 AI 写完一大段代码，心里总打鼓：“这里面会不会漏了边界条件，或者有隐蔽的 Regression Bug？”
+* 想让另一个大模型帮忙挑刺把关，只能痛苦地**复制代码 → 切换窗口 → 粘贴提问 → 再把结论搬回来**，来回折腾好几轮；
+* 现有的多智能体框架（如 CrewAI、LangGraph）通常需要配置商业 API Key，跑一次交叉审阅产生昂贵的按 Token 计费账单，无法复用你已经开通的会员订阅。
 
-**PeerAgent 彻底转变了这一逻辑。** 它是一套极简的 Unix 原生胶水层，连接三大顶级 AI 编程环境：**Google Antigravity (Gemini)**、**Anthropic Claude Code** 与 **OpenAI Codex CLI**。
+**装上 PeerAgent 之后，就像把另一个顶级 AI 程序员请到了你的当前终端里：**
+
+* 🗣️ **在原终端一句话呼叫对方**：在 Claude Code 编写代码时，输入 `/codex 审阅刚才的改动`，Codex 就会在后台无头运行，把带代码行号的审阅结果直接打印在当前屏幕上；反过来，在 Codex 中输入 `/claude` 就能让 Claude 来审阅。
+* 💰 **直接复用现有订阅额度**：通过本机已登录的官方 CLI 驱动，直接消耗你现有的 ChatGPT Plus/Team 或 Claude Pro/Team 订阅配额，无需配置第三方 API Key。
+* 🛡️ **严格安全，绝不擅自改动**：审阅模式全走**只读沙箱**，物理禁止修改任何文件；只有在明确授权的可写模式下才会编辑，且执行前后自动生成**快照与 Diff 对比**。
+
+### 以前 vs. 装上 PeerAgent 之后
+
+| 对比维度 | 传统的折腾方式 | 装上 PeerAgent 之后 |
+| :--- | :--- | :--- |
+| **跨模型交叉审阅** | 手动复制代码 → 切换标签页 → 粘贴发问 → 复制结论返回 | **当前会话直接发起**：输入 `/codex` 或 `/claude`，结果原地返回 |
+| **计费与成本** | 商业 API 框架按 Token 计费，跑几次多轮交互成本不菲 | **本机登录态直接驱动**：复用已有官方订阅额度，无需额外充值 |
+| **多模型合作态度** | 放在同一个会话容易“商业互吹”，缺乏深入查验 | **独立审阅协议**：强制隔离前序推论，必须先核查代码客观事实 |
+| **代码安全边界** | 担心执行权限过大导致误删或篡改文件 | **只读沙箱 + 进程防递归 + 快照 Diff**，未获许可绝不写入 |
+
+---
+
+## 🚀 30秒极简上手
+
+### 1. 前置环境准备
+* **操作系统**：macOS 或 Linux（Windows 用户推荐在 WSL2 下使用）。
+* **Python**：Python 3.10+（纯标准库实现，无需 `pip install` 繁重依赖）。
+* **官方 CLI 工具（按需安装并登录）**：
+  * **Claude Code**：`npm install -g @anthropic-ai/claude-code && claude auth login`
+  * **Codex CLI**：已安装并完成登录（ChatGPT Plus/Team 会员可用）
+  * **Google Antigravity**：已安装（用于 IDE 对话框发起）
+  > [!TIP]
+  > 您不需要同时装齐所有工具。例如：若只需在 Claude Code 中调 Codex，只需确保本机安装并登录了 `claude` 和 `codex` 即可。
+
+### 2. 一键安装
+
+```bash
+git clone https://github.com/puck-muling/peer-agent.git
+cd peer-agent
+./install.sh
+```
+
+> [!NOTE]
+> 安装程序会将核心程序安装到 `~/.local/bin/peer`，并将对应斜杠命令注册到 `~/.claude`、`~/.codex` 和 `~/.gemini`。  
+> 请确保 `~/.local/bin` 已加入系统的 `PATH` 环境变量中。
+
+### 3. 环境与登录自检
+
+```bash
+peer doctor
+```
+如果输出均显示通过，说明系统已就绪！
+
+### 4. 马上体验第一次跨模型审阅
+
+在你的 **Claude Code** 终端中，输入：
+```text
+/codex 审阅当前工作区的改动，检查是否有逻辑漏洞。只做审阅，不要修改任何文件。
+```
+Codex 将在后台自动启动只读沙箱进行审查，几秒后，包含问题行号、影响与修改建议的独立审阅报告就会直接呈现在你的当前会话中！
+
+---
+
+## 🎯 三大高频使用场景
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                      典型开发工作流                          │
+  │                                                             │
+  │   1. 准备提交           2. 重构完毕           3. 方案设计    │
+  │   [提交前查回归]       [重构后查遗漏]        [实施前审方案]  │
+  │        │                     │                     │        │
+  │        ▼                     ▼                     ▼        │
+  │  /codex 查 git diff   /claude 查新返回值   /codex 查证据真伪 │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+### 场景一：代码提交前查回归（Pre-Commit Check）
+在 Claude Code 编写完一段功能后，调用 Codex 作为独立的测试把关者：
+```text
+/codex 审阅当前 git diff，重点排查权限校验、并发竞争与异常边界处理。只做审阅，不修改文件。
+```
+
+### 场景二：重构后查调用方遗漏（Post-Refactor Audit）
+在 Codex 中完成模块重构后，让 Claude 交叉排查受影响的上下游：
+```text
+/claude 审阅刚才重构的 auth 模块，检查项目中所有调用方是否已适配新的返回值结构。
+```
+
+### 场景三：实施前核实技术方案（Pre-Implementation Review）
+在 Antigravity 或终端中提出复杂重构或性能优化方案时：
+```text
+/codex 针对当前优化方案进行独立审查，先核实所列代码文件与行号是否属实，再指出潜在隐患。
+```
+
+---
+
+## 🛡️ 为什么你可以放心让它跑？四大安全防线
+
+PeerAgent 在设计之初就将安全与稳定性放在首位，通过四重安全护栏保护开发者的代码与账号：
+
+1. **严格只读沙箱（Read-Only Enforcement）**：  
+   审阅任务（`review`、`plan`、`advice`）启动时强制锁定只读模式（Codex 注入 `--sandbox read-only`，Claude 禁用文件修改工具并切入沙箱环境）。物理杜绝审阅过程中误改任何工程文件。
+2. **防套娃死循环染色（`PEER_DEPTH` Anti-Loop）**：  
+   子进程自动注入调用深度环境变量。若检测到嵌套互调（例如 Agent A 调起 Agent B，Agent B 试图再次调起 Agent A），操作系统级门禁立即物理阻断退出，彻底杜绝无限循环消耗。
+3. **安全熔断停机锁（STOP Circuit Breaker）**：  
+   精准识别封禁等致命特征。一旦捕获致命异常，立即写入停机锁文件（`~/.peer-review/STOP`），物理阻断后续一切自动调用。**严禁任何 AI 代理自动恢复删除**，必须由人类排查确认后手动解除。（注：普通 401 凭证失效仅提示重新登录，不写停机锁）。
+4. **工作区快照与改动比对（Snapshot Diff）**：  
+   对于明确授权的可写任务（`exec`），执行前会自动记录工作区文件快照，执行完成后输出 Unified Diff 清单，修改点一目了然。
+
+---
+
+## 📦 进阶功能与系统设计
+
+<details>
+<summary><b>1. 查看调用拓扑与工作原理（Architecture Topology）</b></summary>
+
+PeerAgent 采用对等网格拓扑（P2P Mesh），没有常驻的中心后台守护进程：
 
 ```
                 ┌──────────────────────────────────────┐
                 │          用户（人类主持人）            │
                 └──────────────────┬───────────────────┘
-                                   │ 指令 & 审阅裁决
+                                   │ 指令 / 审阅裁决
          ┌─────────────────────────┼─────────────────────────┐
          ▼                         ▼                         ▼
 ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
@@ -54,157 +149,122 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                    统一调度器：peer (Python CLI)                     │
 │  • 任务解包与提示词生成    • 环境变量深度标记 (PEER_DEPTH)            │
-│  • 熔断停机锁检测 (STOP)   • 盲审与证据隔离                          │
+│  • 熔断停机锁检测 (STOP)   • 证据优先独立审阅协议                    │
 │  • 只读/可写沙箱管控      • 快照 (Snapshot) 与 Git Diff 跟踪         │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
----
+各端既是调用的发起者，也是专业的执行与审阅者。详细说明请参考 [架构设计文档 (docs/architecture.md)](./docs/architecture.md)。
+</details>
 
-## ⚡ 核心设计亮点
+<details>
+<summary><b>2. 在终端直接使用 peer 命令行</b></summary>
 
-1. **零额外 API 账单（Subscription-Native）**：  
-   通过无头模式（`claude -p`、`codex exec`）直接驱动本机已登录的官方 CLI，享受您原有的订阅配额，不产生额外按 Token 计费的账单。
-2. **去中心化网格（Decentralized Mesh）**：  
-   没有常驻的中心主控进程。在 Antigravity 里输入 `/codex`，在 Claude 里输入 `/codex`，在 Codex 里输入 `/claude`——任何一端既是消费者也是提供者。
-3. **防虚假共识的双盲审阅（Double-Blind Review）**：  
-   审阅方严格隔离彼此的历史输出；任务说明将**底层客观证据（代码文件、行号、Git diff）强制前置**，审阅方必须先核验事实真实性，再看待审方案，并在回复末尾做出“独立性自述”。
-4. **防套娃死循环染色（`PEER_DEPTH` Taint Tracking）**：  
-   自动在子进程中注入递归深度环境变量。若检测到嵌套互调（`PEER_DEPTH >= 1`），物理阻断退出，彻底杜绝 A 调 B、B 调 A 刷爆会话的灾难。
-5. **安全熔断停机锁（Emergency STOP Circuit Breaker）**：  
-   精准捕捉账号风控停用、严重 401 凭证失效。一旦触发，立即写入 `STOP` 锁文件物理中断后续所有任务。**严禁任何 AI 代理自动恢复删除，必须由人类排查确认安全后手动删除**。
-6. **权限沙箱与快照对比**：  
-   只读模式（`review`、`plan`、`advice`）严格锁定在系统级/CLI 只读沙箱中，禁止写文件；可写执行（`exec`、`image`）必须带有用户明确授权原话，并在执行前自动进行工作区快照，做完自动生成 `changes.diff`。
-
----
-
-## 🚀 快速上手
-
-### 环境要求
-* 操作系统：macOS 或 Linux（Windows 推荐使用 WSL；原生 Windows 因依赖 POSIX `fcntl` 暂不支持）。
-* Python 3.10+（只使用标准库，无需 `pip install` 繁重依赖）。
-* 已安装并登录以下至少一个官方 CLI：
-  * **Claude Code**: `npm install -g @anthropic-ai/claude-code && claude login`
-  * **Codex CLI**: 官方 CLI 登录（ChatGPT Plus/Team 会员可用）。
-  * **Google Antigravity**: 官方前沿 IDE。
-
-### 一键安装
+除了在交互界面使用斜杠命令外，你也可以在任何终端脚本中直接调用 `peer`：
 
 ```bash
-git clone https://github.com/puck-muling/peer-agent.git
-cd peer-agent
-./install.sh
-```
-
-如需开发者模式（修改本地代码立即生效）：
-```bash
-./install.sh --link
-```
-
-运行自检：
-```bash
-peer doctor
-```
-
----
-
-## 📖 使用示例
-
-### 1. 在 Google Antigravity 中
-在对话输入框直接使用斜杠命令：
-```text
-/codex 审一下当前工作区的登录鉴权代码，看看有没有时序竞争问题
-/claude 针对 Redis 缓存穿透出个优化方案
-/codex image 生成一张本项目的架构流程图
-```
-
-### 2. 在 Claude Code 终端中
-在日常编码的 Claude 终端里，直接召唤 Codex 进行对等审阅：
-```text
-/codex 审阅刚才的改动，看看有没有潜在的 Regression Bug
-/codex advice 为什么在高并发下连接池会超时？给个结论
-```
-
-### 3. 在 OpenAI Codex CLI 中
-在 Codex 会话中直接调用 Claude：
-```text
-/claude 审阅刚刚重构的前端组件，检查是否存在不必要的渲染
-```
-
----
-
-## 🛡️ 人机治理与方案冻结（Human in the Loop）
-
-PeerAgent 践行**“用户是主持人”**原则：AI 负责准备材料、多方交叉核实、汇报结果并**停下等待人类拍板**。
-
-```text
-出方案 (plan) ──> 多方交叉独立审阅 (review) ──> 汇总编号 (S01, S02...)
-                                                     │
-                                                     ▼
-按冻结版安全实施 <── 方案 SHA-256 加密冻结 <── 老大审阅单勾选采纳与终审
-```
-
-1. **出方案**：一方提出方案（v001）；
-2. **交叉审阅**：另一方独立查验底层代码与行号，出具评审意见；
-3. **人类勾选**：用户逐条勾选“采纳 / PASS / 修改”；
-4. **加密冻结**：计算方案全文 SHA-256 哈希，运行 `peer freeze <方案.md>` 固定版本，任何未获批准的操作一律不执行。
-
----
-
-## ⚙️ 配置文件与终端命令行直接调用
-
-PeerAgent 的全局配置位于 `~/.peer-review/config.json`，安装时会自动生成默认模板。
-
-除在对话框使用斜杠命令外，你也可以在任何终端中直接使用 `peer` CLI：
-```bash
-# 运行环境与账号登录自检
+# 1. 运行自检与认证状态检查
 peer doctor
 
-# 发起一次只读审阅
+# 2. 发起一次异步只读审阅任务
 peer ask codex review --request ./task.md --cwd .
 
-# 等待审阅结束并查看结果与 Diff
+# 3. 查看进行中的任务状态
+peer status <运行编号> --cwd .
+
+# 4. 等待审阅完成并输出报告与 Diff
 peer wait <运行编号> --cwd .
 
-# 查看今日调用次数与 Token 消耗统计
+# 5. 查看近期调用统计与 Token 用量
 peer stats
 ```
+</details>
+
+<details>
+<summary><b>3. 方案指纹固化与终审流程（Human-in-the-Loop）</b></summary>
+
+在复杂工程重构中，PeerAgent 贯彻**“人类是主持人”**原则：
+* AI 负责出具初版方案 (`plan`)；
+* 另一方模型核查代码真实性并提出独立审阅建议 (`review`)；
+* 用户审阅汇总意见并拍板最终方案；
+* 执行 `peer freeze <方案.md> --cwd .` 计算并固化全文 SHA-256 内容指纹，确保后续执行严格限定在已冻结的范围之内。
+</details>
+
+<details>
+<summary><b>4. 配置文件参考 (~/.peer-review/config.json)</b></summary>
+
+```json
+{
+  "bins": {
+    "claude": "claude",
+    "codex": "codex"
+  },
+  "models": {
+    "claude": "",
+    "codex": ""
+  },
+  "efforts": {
+    "claude": "",
+    "codex": "high"
+  },
+  "service_tiers": {
+    "codex": "default"
+  },
+  "follow_app_settings": true,
+  "approved_auth": {
+    "claude": "subscription",
+    "codex": "subscription"
+  },
+  "timeout_minutes": {
+    "read": 30,
+    "write": 60
+  }
+}
+```
+</details>
 
 ---
 
 ## ❓ 常见问题排查（FAQ）
 
 <details>
-<summary><b>1. PeerAgent 会扣我的商业 API 费用吗？</b></summary>
-不会。PeerAgent 默认直接驱动本机官方已安装登录的 CLI（`claude`、`codex`），使用您的 ChatGPT Plus/Team 或 Claude Pro/Team 订阅配额。只要您在官方 CLI 里使用的是网页/订阅登录，就不会产生额外 API 扣费。
+<summary><b>1. PeerAgent 会扣除我的商业 API 费用吗？</b></summary>
+
+默认不会。PeerAgent 会调用本机已通过官方命令登录的 CLI（`claude`、`codex`）。如果您在这些官方 CLI 中使用的是网页会员/订阅登录（如 ChatGPT Plus/Team 或 Claude Pro/Team），则消耗对应账号的原生配额。具体使用限制和配额政策以官方服务条款为准。
 </details>
 
 <details>
-<summary><b>2. 提示“熔断停机锁生效中（STOP）”怎么办？</b></summary>
-如果检测到严重鉴权失效或疑似封控风控风险，PeerAgent 会在 <code>~/.peer-review/STOP</code> 放置物理熔断锁。这是为了保护您的账号不被高频重试牵连。此时 AI 代理被硬性禁止自动恢复该文件。请您人工核实该工具的登录状态正常后，在终端手动删除该锁文件即可恢复：<code>rm ~/.peer-review/STOP*</code>。
+<summary><b>2. 终端提示“熔断停机锁生效中（STOP）”该如何处理？</b></summary>
+
+当检测到账号异常封禁等致命特征时，PeerAgent 会在 `~/.peer-review/` 目录下生成 `STOP` 或 `STOP-<agent>` 文件。  
+**处理步骤**：
+1. 查看提示中指明的具体锁文件路径；
+2. 确认触发的原因，并在终端排查该官方 CLI 的可用性与账号状态；
+3. 确认一切正常后，手动删除指定的锁文件（例如 `rm ~/.peer-review/STOP-codex`），切勿使用通配符盲目删除所有锁。
 </details>
 
 <details>
-<summary><b>3. 为什么不支持原生 Windows？</b></summary>
-PeerAgent 的并发进程控制与安全文件排他锁使用了 POSIX 的 <code>fcntl</code> 与进程组信号。Windows 用户请在 <b>WSL2</b>（Windows Subsystem for Linux）环境下运行。
+<summary><b>3. 为什么原生 Windows 暂不支持？</b></summary>
+
+PeerAgent 依赖 POSIX 标准的文件排他锁（`fcntl.flock`）与进程组信号机制（`os.killpg`）来确保多进程并发调度与取消的安全性。Windows 用户建议在 **WSL2**（Windows Subsystem for Linux）环境中运行。
 </details>
 
 ---
 
-## ⚖️ 架构横向对比
+## ⚖️ 方案客观对比
 
-| 特性 | PeerAgent | LangGraph / CrewAI | 单模型原生 CLI | 社区 MCP 单向桥接 |
-| :--- | :---: | :---: | :---: | :---: |
-| **计费方式** | **官方订阅原生（零额外 API 账单）** | 按 Token 商业 API | 官方订阅 | 官方订阅 |
-| **多模型交叉审阅** | **支持（对等网格 Mesh）** | 支持（中央编排器） | 不支持（单一视角） | 易脆弱断连 |
-| **防虚假共识协议** | **支持（双盲隔离+证据前置）** | 无 | 无 | 无 |
-| **防死循环套娃** | **支持（`PEER_DEPTH` 进程染色）** | 仅依赖轮次上限 | 无 | 无 |
-| **致命风控熔断锁** | **支持（`STOP` 停机锁）** | 无 | 无 | 无 |
-| **工作区快照与 Diff** | **支持（自动快照对比）** | 无 | 仅依赖 Git | 无 |
-| **外部重型依赖** | **零依赖（纯 Python 标准库）** | 极度重型 | 无 | Node/Docker |
+| 考量维度 | 手动转交模式 | 商业 API 编排框架 (LangGraph / CrewAI 等) | PeerAgent |
+| :--- | :--- | :--- | :--- |
+| **调用流程** | 手动复制材料、切换终端、粘贴发问、整理结论 | 需编写编排脚本或运行独立服务 | **当前终端一条命令发起，后台自动执行并在原处汇报** |
+| **计费方式** | 官方订阅（人工手动操作） | 需配置商业 API Key，按 Token 计费 | **官方 CLI 原生驱动，复用现有订阅额度** |
+| **环境依赖** | 无 | 通常需要安装多个重型 Python/Node 依赖包 | **纯 Python 3.10+ 标准库，零第三方外部依赖** |
+| **审阅隔离** | 依靠人工控制材料 | 依赖开发者自定义构建隔离管道 | **任务协议强制隔离历史推论，证据优先** |
+| **防死循环机制** | 人工停止 | 仅依靠轮次计数器限制 | **`PEER_DEPTH` 操作系统环境变量染色，物理阻断** |
+| **安全风控熔断** | 无 | 通常依赖异常抛出 | **物理 `STOP` 停机锁，禁止 AI 自恢复，保护账号安全** |
 
 ---
 
-## 📄 开源许可证
+## 📄 开源许可证与安全
 
-本项目基于 [MIT License](./LICENSE) 开源发布。
+本项目采用 [MIT License](./LICENSE) 协议开源。  
+关于沙箱权限、凭证安全与漏洞反馈渠道，请完整阅读 [安全模型声明 (SECURITY.md)](./SECURITY.md)。

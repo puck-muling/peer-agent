@@ -27,7 +27,8 @@ PeerAgent 是一套去中心化的对等多智能体（Decentralized Peer-to-Pee
                     └─────────────────────┘
 ```
 
-各端既是**调用的发起者（Client / Consumer）**，也是**专业的执行与审阅者（Server / Expert Provider）**。
+* **发起端（Consumer）**：Antigravity IDE、Claude Code CLI、Codex CLI 均可作为发起源。
+* **执行端（Provider）**：由本机安装的官方 `codex` CLI 和 `claude` CLI 在后台无头拉起，负责具体的代码审查与分析。
 
 ---
 
@@ -39,11 +40,11 @@ AI 代理之间不依赖复杂的 RPC 守护进程或常驻 WebSocket，而是�
    * 发起端将任务描述与底层证据路径写入工作区的 `.peer-review/requests/<timestamp>-<agent>-<kind>.md`。
 2. **异步拉起（Spawn Phase）**：
    * `peer ask <agent> <kind>` 读取请求，识别只读或可写意图；
-   * 后台拉起无头 CLI 进程（`codex exec --sandbox ...` 或 `claude -p --restricted ...`）；
+   * 后台拉起无头 CLI 进程（Codex 注入 `--sandbox read-only`，Claude 注入 `--permission-overrides` 剥离写工具）；
    * 为当前任务分配唯一的 `run_id`，并记录元数据到 `.peer-review/runs/<run_id>/meta.json`。
 3. **轮询等待与回收（Wait Phase）**：
-   * `peer wait <run_id>` 持续监听进程状态，捕获 Stdio 输出流；
-   * 输出格式化 Markdown 报告至 `.peer-review/runs/<run_id>/response.md`，包含用量统计、实际模型、执行耗时与差异 diff。
+   * `peer wait <run_id>` 监听进程状态并捕获 Stdio 输出流；
+   * 输出格式化 Markdown 报告至 `.peer-review/runs/<run_id>/response.md`，包含用量统计、实际模型、执行耗时与改动记录。
 
 ---
 
@@ -66,14 +67,17 @@ if is_nested_depth(os.environ.get("PEER_DEPTH")):
 
 ---
 
-## 4. 防虚假共识的双盲审阅协议（Double-Blind Review）
+## 4. 证据优先的独立审阅协议（Evidence-First Review Protocol）
 
-在多模型讨论中，后发言的模型往往倾向于附和先发言模型的观点（Sybil / Echo-Chamber Effect）。
+在多模型讨论中，后发言的模型往往倾向于附和先发言模型的观点（回音室与附和效应）。
 
-PeerAgent 的解决方案：
-1. **Runs 目录隔离与独立核查规范**：审阅端在系统提示词与任务协议中被严格禁止检索和采信历史 runs 结论，任务只下发受审查的代码文件与底层证据。
-2. **证据前置（Evidence-First）**：任务书排版必须将用户原话、代码文件、Git diff 列在首部，待审推断列在后部。审阅模型必须先通过独立只读工具核查代码第几行是否确实存在缺陷。
-3. **独立性自述（Independence Disclosure）**：审阅回复必须明确声明“是否引用他方结论”，凡未声明或存在引用者，汇总时不计入独立交叉共识。
+PeerAgent 通过任务协议与提示词规范降低附和倾向：
+1. **任务书隔离历史推论**：下发给审阅端的文件严格排除其他模型的历史中间 runs 结论，仅提供当前任务目标与代码背景。
+2. **证据前置（Evidence-First）**：任务书排版必须将用户原话、代码文件、Git diff 列在首部，待审推断列在后部。系统提示词要求审阅模型必须先通过只读工具核查代码第几行是否确实存在缺陷，再给审阅结论。
+3. **独立性自述（Independence Disclosure）**：审阅回复末尾必须包含独立性自述，说明是否受到先入为主假设的影响。
+
+> [!NOTE]
+> 独立审阅规范依赖任务协议和提示词约束，而非操作系统级的文件读取白名单；在提示词遵循度不同的模型上，仍需人类最终核验。
 
 ---
 
