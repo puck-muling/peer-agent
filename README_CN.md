@@ -11,6 +11,23 @@
 
 ---
 
+## 👶 10秒看懂：这到底是个什么工具？（小白必读）
+
+如果你平时在用 **Claude Code**、**ChatGPT (Codex CLI)** 或 **Antigravity** 写代码，你一定遇到过这些场景：
+* 每次让 AI 帮写了一大段代码，心里总打鼓：“这里面会不会有坑？逻辑到底对不对？”
+* 想让另一个大模型帮忙挑刺把关，只能痛苦地**复制代码、切终端、粘贴、发问**，来回折腾好几轮；
+* 试过网上的 Multi-Agent（多智能体）开源框架，动不动就要填 API Key，跑一次交叉审阅几十块钱就扣没了……
+
+**装上 PeerAgent 之后，你的电脑就像有了两个随时互相挑刺的顶级 AI 程序员同事：**
+
+* 🗣️ **一句话呼叫对方**：你在 Claude Code 终端写代码时，直接敲 `/codex 帮我检查这段代码`，Codex 就会在后台调起来帮你审查代码行号并直接把结果打在屏幕上；反过来，在 Codex 里敲 `/claude` 就能让 Claude 来审阅。
+* 💰 **零额外 API 账单**：直接驱动你电脑上已有的 Claude Pro 或 ChatGPT Plus 网页会员登录态，**不需要充值任何商业 API Token，不花一分额外费用**！
+* 🛡️ **安全不踩坑**：审阅模式全走**只读沙箱**，绝不乱碰你的代码；只有你明确点头同意修改时，它才会改，而且改动前会自动帮你做**快照备份**。
+
+> 💡 **简单来说**：它是一个轻量级工具，让你的多个 AI 助手学会“串门聊天与互相找茬”，帮你把关代码质量，而你只需要像架构师一样看汇报、做决定！
+
+---
+
 ## 💡 为什么需要 PeerAgent？
 
 当前市面上的多智能体框架（如 CrewAI、AutoGen、LangGraph）在工程实践中常遇到三个痛点：
@@ -74,7 +91,7 @@
 ### 一键安装
 
 ```bash
-git clone https://github.com/shixiaofei-sunny/peer-agent.git
+git clone https://github.com/puck-muling/peer-agent.git
 cd peer-agent
 ./install.sh
 ```

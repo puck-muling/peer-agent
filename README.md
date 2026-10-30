@@ -11,6 +11,20 @@
 
 ---
 
+## 👶 TL;DR: What is PeerAgent in Plain English?
+
+If you write code with **Claude Code**, **ChatGPT (Codex CLI)**, or **Antigravity**, you know the drill:
+* One model generates 200 lines of code, and you wonder: *"Did it hallucinate a subtle bug or race condition?"*
+* You want a second model to double-check it, so you manually **copy, switch terminals, paste, and ask** back and forth.
+* Existing multi-agent frameworks force you to pay hefty API key token bills, ignoring your already-paid Claude Pro or ChatGPT Plus memberships.
+
+**PeerAgent gives you an instant AI pairing partner without the hassle:**
+* 🗣️ **One-Command Cross-Invocation**: Typing `/codex review` inside Claude Code automatically wakes up Codex in the background to review your code and return file:line citations right in your Claude terminal.
+* 💰 **Zero Extra Bills**: Uses your existing official CLI logins (Claude Pro, ChatGPT Plus/Team). No API keys required.
+* 🛡️ **Safe & Read-Only**: Code reviews run in strict read-only sandboxes. Your workspace is automatically snapshotted before any approved edits.
+
+---
+
 ## 💡 Why PeerAgent?
 
 Current multi-agent frameworks (CrewAI, AutoGen, LangGraph) share three glaring pain points:
@@ -59,7 +73,7 @@ graph TD
 ### One-Line Installation
 
 ```bash
-git clone https://github.com/shixiaofei-sunny/peer-agent.git
+git clone https://github.com/puck-muling/peer-agent.git
 cd peer-agent
 ./install.sh
 ```
