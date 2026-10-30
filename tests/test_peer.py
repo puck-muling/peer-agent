@@ -11,12 +11,17 @@ import sys
 import tempfile
 import unittest
 
+import importlib.util
 from importlib.machinery import SourceFileLoader
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 peer_bin_path = os.path.join(REPO_DIR, "bin", "peer")
 
-peer = SourceFileLoader("peer", peer_bin_path).load_module()
+_loader = SourceFileLoader("peer", peer_bin_path)
+_spec = importlib.util.spec_from_loader("peer", _loader)
+peer = importlib.util.module_from_spec(_spec)
+sys.modules["peer"] = peer
+_loader.exec_module(peer)
 
 
 class TestPeerCore(unittest.TestCase):
@@ -288,6 +293,17 @@ class TestPeerExtended(unittest.TestCase):
         res_stats = subprocess.run([sys.executable, bin_path, "stats"], capture_output=True, text=True)
         self.assertEqual(res_stats.returncode, 0)
         self.assertIn("今天", res_stats.stdout)
+
+    def test_pyproject_toml_packaging_declaration(self):
+        """测试 pyproject.toml 声明完整性，防止构建包目录混淆与破坏安装"""
+        pyproject_path = os.path.join(REPO_DIR, "pyproject.toml")
+        self.assertTrue(os.path.exists(pyproject_path))
+        with open(pyproject_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn('name = "peer-agent"', content)
+        self.assertIn('license = "MIT"', content)
+        self.assertIn('packages = []', content)
+        self.assertIn('script-files = ["bin/peer"]', content)
 
 
 if __name__ == "__main__":

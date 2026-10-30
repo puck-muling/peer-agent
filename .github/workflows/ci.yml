@@ -39,3 +39,7 @@ jobs:
         run: |
           ./bin/peer --help
           ./bin/peer stats
+
+      - name: Package build validation
+        run: |
+          pip install --no-build-isolation --dry-run .
