@@ -301,7 +301,7 @@ class TestPeerExtended(unittest.TestCase):
         with open(pyproject_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn('name = "peer-agent"', content)
-        self.assertIn('license = "MIT"', content)
+        self.assertIn('license = { text = "MIT" }', content)
         self.assertIn('packages = []', content)
         self.assertIn('script-files = ["bin/peer"]', content)
 
