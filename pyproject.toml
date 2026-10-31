@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "peer-agent"
 version = "0.1.0"
-description = "Decentralized multi-agent code review mesh connecting Claude Code, OpenAI Codex, and Google Antigravity."
+description = "让 Claude 与 Codex 帮彼此审代码 —— 订阅原生的对等多智能体交叉审阅 CLI (Connecting Claude, Codex, and Antigravity)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -15,7 +15,7 @@ authors = [
 keywords = [
     "multi-agent",
     "code-review",
-    "claude-code",
+    "claude",
     "codex",
     "antigravity",
     "peer-review",
@@ -45,6 +45,19 @@ Issues = "https://github.com/puck-muling/peer-agent/issues"
 [tool.setuptools]
 packages = []
 script-files = ["bin/peer"]
+
+[tool.setuptools.data-files]
+"templates" = [
+    "templates/review.md",
+    "templates/plan.md",
+    "templates/advice.md",
+    "templates/exec.md",
+    "templates/image.md",
+]
+"skills/antigravity/claude" = ["skills/antigravity/claude/SKILL.md"]
+"skills/antigravity/codex" = ["skills/antigravity/codex/SKILL.md"]
+"skills/claude/codex" = ["skills/claude/codex/SKILL.md"]
+"skills/codex/claude" = ["skills/codex/claude/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

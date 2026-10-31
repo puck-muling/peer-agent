@@ -1,0 +1,44 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0d1117","primaryColor":"#161b22","primaryTextColor":"#e6edf3","primaryBorderColor":"#58a6ff","lineColor":"#8b949e","secondaryColor":"#142b30","tertiaryColor":"#202333","fontFamily":"sans-serif"}}}%%
+sequenceDiagram
+    autonumber
+    participant C as 发起端 Consumer
+    participant P as peer ask / 临时 _run
+    participant A as 无头 Claude / Codex
+    participant F as 工作区文件协议
+    C->>F: 写入任务说明（原始证据前置）
+    C->>P: peer ask agent review --request task.md
+    P->>P: 检查 STOP / STOP-agent；is_nested_depth(PEER_DEPTH)
+    alt STOP 停机锁生效
+        P-->>C: 拒绝调用（Exit Code 3）
+    else PEER_DEPTH 大于等于 1
+        P-->>C: 拒绝嵌套 peer ask（Exit Code 2）
+    else 门禁通过
+        P->>P: 校验类型、请求、CLI、登录方式；可写需 --quote
+        opt 可写 exec（非普通 review）
+            P->>P: 获取项目可写锁
+        end
+        P->>F: 保存 runs/run_id/request.md
+        opt 可写 exec（非普通 review）
+            P->>F: 保存调用前 snapshot
+        end
+        P->>F: 写 meta.json / status.json（queued）
+        P->>P: 启动一次性后台 _run；读取 meta；复查 STOP
+        P->>A: 启动无头 CLI；child_env 注入 PEER_DEPTH=1（通常）
+        P-->>C: 返回 run_id（CLI 启动与返回异步）
+        C->>P: peer wait run_id：轮询 status.json
+        opt 子进程尝试递归调用
+            A->>P: 再次 peer ask（继承 PEER_DEPTH 大于等于 1）
+            P->>P: STOP 检查后 is_nested_depth 命中
+            P-->>A: 阻断嵌套请求，Exit Code 2；不启动下一层
+        end
+        A-->>P: Stdio（stdout / stderr）
+        P->>F: _run 的 pump 线程写 stdout.log / stderr.log
+        P->>P: 解析结果
+        opt 可写 exec（非普通 review）
+            P->>F: compare(snapshot, workspace)；changes.md / changes.diff
+        end
+        P->>P: 解析结果，扫描致命鉴权错误；必要时写 STOP-agent
+        P->>F: 写 response.md 与最终 status.json
+        F-->>C: peer wait 读取报告与 Diff 路径并打印
+        Note over C,P: wait 超时（10）或 unknown（11）不等于失败可重试；不要自动重新 ask
+    end

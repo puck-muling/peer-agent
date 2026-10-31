@@ -15,4 +15,4 @@
 - [ ] Follows defensive safety constraints (no hardcoded credentials, respects read-only sandboxes).
 - [ ] Pure Python 3.10+ standard library maintained (zero external pip runtime dependencies).
 - [ ] Code is documented and comments match existing conventions.
-- [ ] Updated `README.md` and `README_CN.md` if changing user-facing commands or behavior.
+- [ ] Updated `README.md` (Chinese) and `README_EN.md` (English) if changing user-facing commands or behavior.

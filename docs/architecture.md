@@ -6,29 +6,13 @@ PeerAgent 是一套去中心化的对等多智能体（Decentralized Peer-to-Pee
 
 ## 1. 核心架构拓扑
 
-不同于以中央 Python 进程为核心的编排系统，PeerAgent 采用对等网格拓扑（Peer-to-Peer Mesh）：
+不同于以中心后台守护进程为核心的编排系统，PeerAgent 采用无常驻后台守护进程的单入口调度架构（三端发起、两端执行）：
 
-```
-    ┌──────────────────────┐          ┌──────────────────────┐
-    │  Antigravity (Gemini)│          │   Claude Code CLI    │
-    └──────────┬───────────┘          └──────────┬───────────┘
-               │                                 │
-               │ /codex, /claude                 │ /codex
-               ▼                                 ▼
-         ┌─────────────────────────────────────────────┐
-         │             peer 统一调度核心               │
-         │      (单文件 Python CLI，仅依赖标准库)      │
-         └─────────────────────┬───────────────────────┘
-                               ▲
-                               │ /claude
-                               │
-                    ┌──────────┴──────────┐
-                    │      Codex CLI      │
-                    └─────────────────────┘
-```
+![三端发起、两端执行的调用拓扑](./diagrams/topology.svg)
 
-* **发起端（Consumer）**：Antigravity IDE、Claude Code CLI、Codex CLI 均可作为发起源。
-* **执行端（Provider）**：由本机安装的官方 `codex` CLI 和 `claude` CLI 在后台无头拉起，负责具体的代码审查与分析。
+* **发起端（Consumers）**：Antigravity、Claude、Codex 均可作为交互发起源，共享同一个文件协议入口。
+* **统一调度核心（peer）**：纯 Python 标准库编写的单文件 CLI，按需启动，无常驻后台守护进程。临时后台 `_run` 仅用于生命周期管理当前单次任务。
+* **执行端（Providers）**：由本机安装的官方 `claude` CLI 和 `codex` CLI 在后台无头拉起，负责具体的代码审查与分析。Antigravity 仅为发起端，不承担无头执行端角色。
 
 ---
 
@@ -36,15 +20,19 @@ PeerAgent 是一套去中心化的对等多智能体（Decentralized Peer-to-Pee
 
 AI 代理之间不依赖复杂的 RPC 守护进程或常驻 WebSocket，而是基于标准 Unix 文件协议和标准输入输出（Stdio）完成解耦：
 
+![请求落盘、门禁、异步执行与结果回收时序](./diagrams/review_sequence.svg)
+
 1. **请求落盘（Request Phase）**：
    * 发起端将任务描述与底层证据路径写入工作区的 `.peer-review/requests/<timestamp>-<agent>-<kind>.md`。
 2. **异步拉起（Spawn Phase）**：
-   * `peer ask <agent> <kind>` 读取请求，识别只读或可写意图；
-   * 后台拉起无头 CLI 进程（Codex 强制注入 `--sandbox read-only`，Claude 注入 `--tools` 明确剔除 `Edit`/`Write` 工具并开启只读沙箱）；
-   * 为当前任务分配唯一的 `run_id`，并记录元数据到 `.peer-review/runs/<run_id>/meta.json`。
+   * `peer ask <agent> <kind>` 读取请求，校验 STOP 停机锁与 PEER_DEPTH 调用深度，校验类型、CLI 与登录方式；
+   * 可写模式取得项目写锁并记录调用前快照（Snapshot）；
+   * 写入 `meta.json` 与 `status.json`（排队状态），启动临时后台 `_run` 进程；
+   * `_run` 进程拉起无头 CLI（Codex 强制注入 `--sandbox read-only`，Claude 明确剔除 `Edit`/`Write` 工具并开启只读沙箱）；
+   * 为当前任务分配唯一的 `run_id`，异步返回给发起端。
 3. **轮询等待与回收（Wait Phase）**：
-   * `peer wait <run_id>` 监听进程状态并捕获 Stdio 输出流；
-   * 输出格式化 Markdown 报告至 `.peer-review/runs/<run_id>/response.md`，包含用量统计、实际模型、执行耗时与改动记录。
+   * `peer wait <run_id>` 监听进程状态并读取结果报告（Stdio 由后台 `_run` 的 pump 线程捕获至日志）；
+   * 输出格式化 Markdown 报告至 `.peer-review/runs/<run_id>/response.md`，包含用量统计、实际模型、执行耗时；可写模式比对快照生成 Unified Diff 改动记录。
 
 ---
 
@@ -63,7 +51,7 @@ env["PEER_DEPTH"] = str(curr_depth + 1)
 if is_nested_depth(os.environ.get("PEER_DEPTH")):
     raise PeerError("检测到嵌套调用：禁止在任务进程中再次调用 peer ask，防止递归死循环。")
 ```
-任何第二层代理如果尝试再次调起对等模型，会被进程环境变量深度门禁检查拦截阻断，退出码为 `2`。
+任何任务子进程如果尝试再次调起 peer，会被进程环境变量深度门禁检查拦截阻断，退出码为 `2`。
 
 ---
 
@@ -72,9 +60,13 @@ if is_nested_depth(os.environ.get("PEER_DEPTH")):
 在多模型讨论中，后发言的模型往往倾向于附和先发言模型的观点（回音室与附和效应）。
 
 PeerAgent 通过任务协议与提示词规范降低附和倾向：
+
+![证据前置、假设后置与人类终审](./diagrams/evidence_first_protocol.svg)
+
 1. **任务书隔离历史推论**：下发给审阅端的文件严格排除其他模型的历史中间 runs 结论，仅提供当前任务目标与代码背景。
-2. **证据前置（Evidence-First）**：任务书排版必须将用户原话、代码文件、Git diff 列在首部，待审推断列在后部。系统提示词要求审阅模型必须先通过只读工具核查代码第几行是否确实存在缺陷，再给审阅结论。
-3. **独立性自述（Independence Disclosure）**：审阅回复末尾必须包含独立性自述，说明是否受到先入为主假设的影响。
+2. **证据前置（Evidence-First）**：任务书排版必须将用户原话、代码文件行号、Git diff 真实证据列在首部，待审推断与假设列在后部。系统提示词要求审阅模型必须先通过只读工具核查代码客观事实，再给审阅结论。
+3. **独立性自述（Independence Disclosure）**：审阅回复末尾必须包含独立性自述，说明所用材料、限制与假设影响。
+4. **人类主持人把关**：审阅输出仅作为决策参考，不等于实施授权，最终由人类主持人核验并决定后续行动。
 
 > [!NOTE]
 > 独立审阅规范依赖任务协议和提示词约束，而非操作系统级的文件读取白名单；在提示词遵循度不同的模型上，仍需人类最终核验。
@@ -85,7 +77,7 @@ PeerAgent 通过任务协议与提示词规范降低附和倾向：
 
 * **只读沙箱（Read-Only）**：
   * Codex 强制注入 `--sandbox read-only`；
-  * Claude Code 配置拒绝规则 `deny: ["Edit(~/**)", "Edit(./**)"]`，且沙箱内 Bash 禁网。
+  * Claude 配置拒绝规则 `deny: ["Edit(~/**)", "Edit(./**)"]`，且沙箱内 Bash 禁网。
 * **可写快照（Snapshot Diff）**：
   * 可写调用前遍历工作区执行快照，排除 `.git`、`node_modules` 等缓存；
   * 执行完成后对比生成精确的 Unified Diff，由人类审查确认。

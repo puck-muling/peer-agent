@@ -131,21 +131,21 @@ fi
 PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
 PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
 if [ "$PY_CHECK" != "1" ]; then
-  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: $PY_VER）。请先升级 Python。" >&2
+  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: ${PY_VER}）。请先升级 Python。" >&2
   exit 1
 fi
-echo "   Python 版本: $PY_VER (符合 >= 3.10 要求)"
+echo "   Python 版本: ${PY_VER} (符合 >= 3.10 要求)"
 
 if command -v claude >/dev/null 2>&1; then
-  echo "   Claude CLI: 已安装 ($(claude --version 2>/dev/null || echo 'OK'))"
+  echo "   Claude: 已安装 ($(claude --version 2>/dev/null || echo 'OK'))"
 else
-  echo "   ⚠️ 提示: 未检测到 'claude' CLI。若需调用 Claude，请先安装官方 Claude Code: npm install -g @anthropic-ai/claude-code"
+  echo "   ⚠️ 提示: 未检测到 'claude' CLI。若需调用 Claude，请先安装官方 Claude: npm install -g @anthropic-ai/claude-code"
 fi
 
 if command -v codex >/dev/null 2>&1; then
-  echo "   Codex CLI: 已安装 ($(codex --version 2>/dev/null || echo 'OK'))"
+  echo "   Codex: 已安装 ($(codex --version 2>/dev/null || echo 'OK'))"
 else
-  echo "   ⚠️ 提示: 未检测到 'codex' CLI。若需调用 Codex，请先安装官方 Codex CLI。"
+  echo "   ⚠️ 提示: 未检测到 'codex' CLI。若需调用 Codex，请先安装官方 Codex: npm install -g @openai/codex"
 fi
 
 echo "==> 2. 初始化目标目录与核心组件..."
@@ -184,13 +184,13 @@ safe_install_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemin
 safe_install_skill "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
 echo "   [Antigravity] 已安装 /codex 和 /claude 技能。"
 
-# B. Claude Code Skill
+# B. Claude Skill
 safe_install_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
-echo "   [Claude Code] 已安装 /codex 技能。"
+echo "   [Claude] 已安装 /codex 技能。"
 
 # C. Codex Skill
 safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
-echo "   [Codex CLI]   已安装 /claude 技能。"
+echo "   [Codex]   已安装 /claude 技能。"
 
 echo "==> 4. 运行自检验证..."
 if "$LOCAL_BIN/peer" doctor; then
@@ -199,10 +199,21 @@ if "$LOCAL_BIN/peer" doctor; then
   echo ""
   echo "使用方式："
   echo "  1. 在 Antigravity 对话框中直接输入: /codex 审一下当前代码"
-  echo "  2. 在 Claude Code 终端中输入:       /codex 检查这个函数的逻辑边界"
-  echo "  3. 在 Codex CLI 中输入:             /claude 审阅当前改动"
+  echo "  2. 在 Claude 终端中输入:       /codex 检查这个函数的逻辑边界"
+  echo "  3. 在 Codex 中输入:             /claude 审阅当前改动"
   echo ""
-  echo "提示: 请确保 $LOCAL_BIN 已加入系统的 PATH 环境变量（如 export PATH=\"\$HOME/.local/bin:\$PATH\"）。"
+  if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
+    echo "⚠️  注意: $LOCAL_BIN 尚未加入系统的 PATH 环境变量。"
+    echo "👉 建议在 ~/.zshrc 或 ~/.bashrc 追加以下内容并重新打开终端："
+    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
+  else
+    echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
+  fi
 else
   echo "⚠️ 自检发现部分配置需确认，请根据上述提示核查。"
+  if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
+    echo ""
+    echo "⚠️  注意: $LOCAL_BIN 尚未加入系统的 PATH 环境变量。"
+    echo "👉 建议执行: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi

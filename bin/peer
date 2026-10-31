@@ -12,7 +12,7 @@
       类型：plan 出方案 | review 审阅 | advice 结论与建议 | exec 修改执行 | image 生成图片（仅 codex）
       plan/review/advice 为只读；exec/image 为可写，必须带 --quote（用户授权原话），调用前自动快照。
       默认在后台启动调用，立刻返回运行编号；--foreground 则在前台等到结束。不会自动重试。
-      模型和强度：本次指定（--model/--effort）> config.json 固定 > 跟随 Codex / Claude Code 自己的设置 > 程序默认。
+      模型和强度：本次指定（--model/--effort）> config.json 固定 > 跟随 Codex / Claude 自己的设置 > 程序默认。
 
   peer wait <运行编号> --cwd 项目目录 [--timeout 秒]
       等待调用结束并打印结果。超时只代表“还在跑”，请再次 wait，不要重新 ask。
@@ -484,7 +484,7 @@ def auth_state(cfg, agent):
         if not j.get("loggedIn"):
             return "unknown", "Claude 未登录"
         desc = "authMethod=%s%s" % (method, (" / " + sub) if sub else "")
-        if method == "claude.ai":
+        if method in ("claude.ai", "oauth_token"):
             return "subscription", desc
         if re.search(r"api|console|key", method, re.I):
             return "api", desc
@@ -535,7 +535,7 @@ def describe_usage(u, auth_category=""):
 
 # ---------------------------------------------------------------- 模型与强度
 NAME_RE = re.compile(r"^[A-Za-z0-9._:/\[\]-]{1,80}$")
-APP_CN = {"codex": "Codex", "claude": "Claude Code"}
+APP_CN = {"codex": "Codex", "claude": "Claude"}
 
 
 def read_codex_settings():
@@ -574,7 +574,7 @@ def read_codex_settings():
 
 
 def read_claude_settings():
-    """只读取 Claude Code settings.json 里的 model、effortLevel，以及服务地址的域名（不读令牌）。"""
+    """只读取 Claude settings.json 里的 model、effortLevel，以及服务地址的域名（不读令牌）。"""
     d = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
     j = read_json(os.path.join(d, "settings.json"), {}) or {}
     out = {}
@@ -686,7 +686,7 @@ def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None):
     if agent == "claude":
         # 加载 CLAUDE.md 与 Skill（不再用 --safe-mode / --disable-slash-commands）；仍关闭钩子和 MCP
         if mode == "read":
-            # 只读：Bash 在 Claude Code 沙箱里跑（项目、主目录和附加目录不可写，$TMPDIR 可写；网络白名单为空，Bash 不能联网），
+            # 只读：Bash 在 Claude 沙箱里跑（项目、主目录和附加目录不可写，$TMPDIR 可写；网络白名单为空，Bash 不能联网），
             # 联网只走 WebSearch / WebFetch
             deny = ["Edit(~/**)", "Edit(./**)"] + ["Edit(/%s/**)" % d.rstrip("/") for d in add_dirs]
             settings = {"disableAllHooks": True,
@@ -700,7 +700,7 @@ def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None):
             args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Edit,Write,Bash,Skill",
                     "--allowedTools", "Edit,Write,Bash,Skill", "--permission-mode", "acceptEdits"]
         args += ["--disallowedTools", "mcp__*", "--strict-mcp-config",
-                 "--settings", json.dumps(settings, ensure_ascii=False), "--permission-prompts", "none",
+                 "--settings", json.dumps(settings, ensure_ascii=False),
                  "--no-session-persistence", "--max-turns", str(cfg["max_turns"][mode]),
                  "--output-format", "stream-json", "--verbose"]
         for d in add_dirs:
@@ -1232,7 +1232,7 @@ def parse_claude(stdout_path):
             msg = ev.get("message") or {}
             m = msg.get("model")
             if m == "<synthetic>":
-                continue  # Claude Code 自己生成的提示（如额度用尽），不是模型的回答
+                continue  # Claude 自己生成的提示（如额度用尽），不是模型的回答
             parts = [c.get("text", "") for c in (msg.get("content") or []) if isinstance(c, dict) and c.get("type") == "text"]
             if any(x.strip() for x in parts):
                 texts.append("".join(parts))
@@ -1905,17 +1905,22 @@ def cmd_doctor(a):
         else:
             print("- 网络代理：未配置固定代理检测（直接联网或使用系统默认路由）")
     results = {}
+    has_error = False
+    found_any = False
     for agent in ("codex", "claude"):
         b = agent_bin(cfg, agent)
         if not (os.path.isfile(b) and os.access(b, os.X_OK)):
             print("- %s：找不到命令 %s" % (AGENT_NAMES[agent], b))
             continue
+        found_any = True
         code, out, err = run_quick([b, "--version"])
         ver = (out or err).strip().splitlines()[0] if (out or err).strip() else "未知"
         cat, desc = auth_state(cfg, agent)
         results[agent] = cat
         approved = cfg["approved_auth"].get(agent)
         flag = "✅ 与已确认一致" if cat == approved else "⚠️ 与已确认（%s）不一致" % approved
+        if cat != approved or cat == "unknown":
+            has_error = True
         print("- %s：%s；登录方式 %s（%s）%s" % (AGENT_NAMES[agent], ver, cat, desc, flag))
         try:
             me = resolve_model_effort(cfg, agent)
@@ -1925,6 +1930,9 @@ def cmd_doctor(a):
             print("    默认模型：%s；默认强度：%s%s%s" % (m_disp, e_disp, st_part, extra))
         except PeerError as e:
             print("    模型/强度/服务层级设置有问题：%s" % e)
+            has_error = True
+    if not found_any:
+        has_error = True
     if a.approve:
         for agent, cat in results.items():
             if cat == "unknown":
@@ -1933,6 +1941,8 @@ def cmd_doctor(a):
             cfg["approved_auth"][agent] = cat
         save_config(cfg)
         print("已把当前登录方式记为已确认。")
+    elif has_error:
+        sys.exit(2)
 
 
 def cmd_stats(a):

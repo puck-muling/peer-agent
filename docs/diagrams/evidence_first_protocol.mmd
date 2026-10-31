@@ -1,0 +1,31 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0d1117","primaryColor":"#161b22","primaryTextColor":"#e6edf3","primaryBorderColor":"#58a6ff","lineColor":"#8b949e","secondaryColor":"#142b30","tertiaryColor":"#202333","fontFamily":"sans-serif"}}}%%
+flowchart LR
+    subgraph TASK["任务说明书 · 阅读顺序"]
+        direction TB
+        E1["置顶 01 · 用户原话<br/>明确需求、授权与验收范围"]
+        E2["置顶 02 · 代码文件与行号<br/>可直接打开核验的原始证据"]
+        E3["置顶 03 · Git diff / changes.diff<br/>真实改动证据；没有则声明缺失"]
+        H["后置 · 待审方案与主代理推断<br/>显式标注假设及验证方式，降低先入影响"]
+        E1 --> E2 --> E3 --> H
+    end
+    E3 --> R1
+    H -.->|"先核实证据，再阅读假设"| R1
+    subgraph REVIEW["独立审阅流 · 人类主持"]
+        direction TB
+        R1["01 独立核实客观文件与行号<br/>核查原始需求、代码及真实 Diff"]
+        R2["02 给出问题事实与结论<br/>列证据缺口、影响与建议，不把假设当事实"]
+        R3["03 独立性自述<br/>说明所用材料、限制与假设影响"]
+        R4["04 人类主持人核验并决策<br/>审阅输出不等于实施授权"]
+        R1 --> R2 --> R3 --> R4
+    end
+    B["约束边界：任务协议 + 提示词<br/>非操作系统文件白名单；不保证自动实现独立性<br/>不主动读取未列为原始证据的历史 runs 回复与中间结论"]
+    B -.-> R1
+    B -.-> R4
+    classDef evidence fill:#142b30,stroke:#3dd6c6,color:#e6edf3
+    classDef hypothesis fill:#202333,stroke:#b9a0ff,color:#c5b7ed
+    classDef review fill:#161b22,stroke:#58a6ff,color:#e6edf3
+    classDef human fill:#30271b,stroke:#e3b365,color:#e6edf3
+    class E1,E2,E3 evidence
+    class H hypothesis
+    class R1,R2,R3 review
+    class R4,B human

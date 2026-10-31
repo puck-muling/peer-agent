@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Single-file Python CLI powered purely by Python 3.10+ standard library without external dependencies.
   - Subcommands: `doctor`, `ask`, `wait`, `status`, `freeze`, `verify`, `since-freeze`, `stats`.
 - **Subscription-Native Cross-Model Review**:
-  - Direct P2P inter-agent review between Claude Code, OpenAI Codex CLI, and Google Antigravity.
+  - Direct P2P inter-agent review between Claude, Codex, and Antigravity.
   - Reuses existing active subscriptions (ChatGPT Plus/Team, Claude Pro/Team) through local official CLIs.
 - **Defensive Safety Engine**:
   - Strict read-only sandbox mode enforcement (`review`, `plan`, `advice`).
@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Sensitive file scrubbing and credential masking.
 - **Agent Integration Skills**:
   - Antigravity slash commands: `/codex`, `/claude`.
-  - Claude Code slash command: `/codex`.
-  - Codex CLI slash command: `/claude`.
+  - Claude slash command: `/codex`.
+  - Codex slash command: `/claude`.
 - **Structured Review Templates**:
   - Markdown templates for `review.md`, `plan.md`, `advice.md`, `exec.md`, and `image.md`.
 - **One-Line Installer (`install.sh`)**:
@@ -34,3 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Standard `pyproject.toml` specification.
   - GitHub Actions CI workflow running multi-OS (Ubuntu, macOS) and multi-version (Python 3.10, 3.11, 3.12) matrices.
   - GitHub issue forms and pull request templates.
+
+### Fixed
+- **Installation & Setup**:
+  - Fixed Bash syntax error in `install.sh` under strict mode (`set -u`) when evaluating `${PY_VER}` next to multibyte punctuation.
+  - Added PATH environment check and export guidance in `install.sh` for standard macOS setups.
+  - Corrected `peer doctor` exit code so missing CLI dependencies or auth errors reliably report exit code 2.
+- **Claude Integration**:
+  - Added support for Claude Code `oauth_token` authentication method, resolving auth approval lock-out.
+  - Removed unsupported `--permission-prompts none` CLI flag to ensure backward compatibility across Claude CLI versions.
+- **Skill Task Passing**:
+  - Replaced single-quoted Heredoc with `printf` in `skills/claude/codex/SKILL.md` to ensure `$ARGUMENTS` is correctly interpolated into review requests.
+- **Packaging**:
+  - Configured `data-files` in `pyproject.toml` to package `templates/` and `skills/` for pip distribution.

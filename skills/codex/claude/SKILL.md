@@ -1,11 +1,11 @@
 ---
 name: claude
-description: 在 Codex 聊天中通过 /claude、$claude 或明确调用 Claude 的请求，使用本机 Claude Code 读取、创建、编辑任务指定的文件，并返回真实执行结果。提到 Claude 但未要求调用时不执行。
+description: 在 Codex 聊天中通过 /claude、$claude 或明确调用 Claude 的请求，使用本机 Claude 读取、创建、编辑任务指定的文件，并返回真实执行结果。提到 Claude 但未要求调用时不执行。
 ---
 
-# 调用本机 Claude Code
+# 调用本机 Claude
 
-用户在当前 Codex 聊天选择 `/claude` 或 `$claude`，附上任务，由 Codex 调用本机 Claude Code，结果返回当前聊天。不要让用户另开终端，也不要以 Codex 自己的意见或改动冒充 Claude 的执行。
+用户在当前 Codex 聊天选择 `/claude` 或 `$claude`，附上任务，由 Codex 调用本机 Claude，结果返回当前聊天。不要让用户另开终端，也不要以 Codex 自己的意见或改动冒充 Claude 的执行。
 
 ## 解析任务与范围
 
@@ -16,7 +16,7 @@ description: 在 Codex 聊天中通过 /claude、$claude 或明确调用 Claude 
 
 ## 运行环境与权限
 
-- **提升权限（Escalated）**：Codex 默认沙箱无网络、不能写工作区外，而 Claude 需要访问 API、写会话记录并读取登录凭证。因此调用 Claude 的命令必须申请提升权限运行（`sandbox_permissions: "require_escalated"`），justification 写“调用本机 Claude Code，需要网络权限”。
+- **提升权限（Escalated）**：Codex 默认沙箱无网络、不能写工作区外，而 Claude 需要访问 API、写会话记录并读取登录凭证。因此调用 Claude 的命令必须申请提升权限运行（`sandbox_permissions: "require_escalated"`），justification 写“调用本机 Claude，需要网络权限”。
 - **统一入口优先**：优先使用 `peer` 统一调度器（`peer ask claude`），确保享有工作区快照（Snapshot）、改动对比（Diff）、防死循环深度标记（`PEER_DEPTH`）与安全熔断停机锁（`STOP`）保护。
 - **环境隔离**：脚本启动前移除所有第三方 API 环境变量污染（如 `ANTHROPIC_BASE_URL` 等），确保走本机官方登录通道。
 

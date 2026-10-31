@@ -1,0 +1,22 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0d1117","primaryColor":"#161b22","primaryTextColor":"#e6edf3","primaryBorderColor":"#58a6ff","lineColor":"#8b949e","secondaryColor":"#142b30","tertiaryColor":"#202333","fontFamily":"sans-serif"}}}%%
+flowchart TB
+    subgraph consumers["发起端 · Consumers"]
+        AG["Antigravity"]
+        CC["Claude"]
+        CX["Codex"]
+    end
+    AG -->|"/codex 或 /claude"| P
+    CC -->|"/codex"| P
+    CX -->|"/claude"| P
+    P["peer · 单文件 Python CLI<br/>纯标准库 · 无常驻后台守护进程 · 文件协议调度<br/>peer ask / peer wait · STOP / PEER_DEPTH 门禁"]
+    P --> CL["无头执行端 · Claude<br/>只读：移除 Edit / Write；Bash 沙箱禁网<br/>WebSearch / WebFetch 仍可用<br/>可写 exec：acceptEdits + 调用前快照 / 调用后 Diff"]
+    P --> CO["无头执行端 · Codex<br/>只读：--sandbox read-only<br/>可写 exec：--sandbox workspace-write<br/>调用前快照 / 调用后 Diff"]
+    CL -.-> FILES["文件回收：response.md / status.json<br/>仅可写模式：changes.md / changes.diff；受快照与 Diff 上限约束"]
+    CO -.-> FILES
+    FILES -.->|"peer wait 读取报告返回发起端"| P
+    classDef client fill:#161b22,stroke:#58a6ff,color:#e6edf3
+    classDef core fill:#142b30,stroke:#3dd6c6,color:#e6edf3
+    classDef provider fill:#161b22,stroke:#b9a0ff,color:#e6edf3
+    class AG,CC,CX client
+    class P,FILES core
+    class CL,CO provider

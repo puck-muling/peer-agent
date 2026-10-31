@@ -52,7 +52,7 @@ Verify that local CLI commands execute cleanly:
 - Follow [PEP 8](https://peps.python.org/pep-0008/) conventions for Python code.
 - Ensure all subprocess calls properly manage environment isolation (`child_env()`) and avoid shell injection vulnerabilities.
 - When adding or modifying slash commands or skills, test both macOS and Linux POSIX environments.
-- Keep documentation bilingual when adding major features (update both `README.md` and `README_CN.md`).
+- Keep documentation bilingual when adding major features (update both `README.md` and `README_EN.md`).
 
 ---
 

@@ -350,6 +350,48 @@ class TestPeerExtended(unittest.TestCase):
             peer.cmd_verify(VerifyArgs)
         self.assertEqual(cm.exception.code, 6)
 
+    def test_oauth_token_auth_state(self):
+        """测试 Claude Code 官方 oauth_token 登录态能够被正确识别为 subscription"""
+        from unittest.mock import patch
+        with patch.object(peer, "run_quick", return_value=(0, '{"loggedIn": true, "authMethod": "oauth_token", "subscriptionType": "pro"}', "")):
+            cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
+            self.assertEqual(cat, "subscription")
+            self.assertIn("oauth_token", desc)
+
+    def test_claude_skill_bash_evaluation(self):
+        """测试 skills/claude/codex/SKILL.md 中的落盘逻辑在真实 Bash 环境下能正确展开变量"""
+        import subprocess, tempfile
+        skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
+        self.assertTrue(os.path.exists(skill_file))
+        with open(skill_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn("cat << 'PEER_EOF'", content, "严禁在任务写入中再次出现阻止变量求值的单引号 Heredoc")
+        self.assertIn("printf '# 任务\\n%s\\n'", content)
+
+        # 模拟真实 Bash 执行
+        test_script = """
+        ARGUMENTS="真实用户测试任务指令_98765"
+        REQ_FILE=$(mktemp)
+        printf '# 任务\\n%s\\n' "$ARGUMENTS" > "$REQ_FILE"
+        grep "真实用户测试任务指令_98765" "$REQ_FILE"
+        rm -f "$REQ_FILE"
+        """
+        res = subprocess.run(["bash", "-c", test_script], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("真实用户测试任务指令_98765", res.stdout)
+
+    def test_doctor_exit_code_on_missing_tools(self):
+        """测试当没有任何 CLI 工具可用时，doctor 命令必须以非零（2）退出码阻断"""
+        from unittest.mock import patch
+        class DoctorArgs:
+            approve = False
+        fake_cfg = dict(peer.DEFAULT_CONFIG)
+        fake_cfg["bins"] = {"codex": "/nonexistent/codex", "claude": "/nonexistent/claude"}
+        with patch.object(peer, "load_config", return_value=fake_cfg):
+            with self.assertRaises(SystemExit) as cm:
+                peer.cmd_doctor(DoctorArgs)
+            self.assertEqual(cm.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

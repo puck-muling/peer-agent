@@ -1,12 +1,12 @@
 ---
 name: codex
-description: 用户输入 /codex <任务> 时，通过 peer 调度 Codex CLI 执行该任务并汇报结果。Codex 可读取并写入当前工作目录。
+description: 用户输入 /codex <任务> 时，通过 peer 调度 Codex 执行该任务并汇报结果。Codex 可读取并写入当前工作目录。
 argument-hint: "<任务描述>"
 disable-model-invocation: true
 allowed-tools: Bash(*)
 ---
 
-# /codex：调用 Codex CLI
+# /codex：调用 Codex
 
 用户参数：`$ARGUMENTS`
 
@@ -48,14 +48,11 @@ allowed-tools: Bash(*)
      exit 4
    fi
 
-   # 4. 安全落盘请求说明（定界符加引号，完全免疫用户指令中的反引号、双引号与 $ 二次展开）
+   # 4. 安全落盘请求说明（通过 printf 格式化安全写入，既能求值 $ARGUMENTS，又完全免疫用户指令中的反引号与命令注入）
    REQ_DIR="$PWD/.peer-review/requests"
    mkdir -p "$REQ_DIR"
    REQ_FILE="$REQ_DIR/$(date +%Y%m%d-%H%M%S)-claude-codex.md"
-cat << 'PEER_EOF' > "$REQ_FILE"
-# 任务
-$ARGUMENTS
-PEER_EOF
+   printf '# 任务\n%s\n' "$ARGUMENTS" > "$REQ_FILE"
 
    # 5. 安全提取意图与任务原文（通过 Python 安全读取文件，完全免疫 shell 命令注入）
    PARSED_JSON=$(python3 -c '
@@ -100,9 +97,9 @@ print(json.dumps({"kind": kind, "quote": raw[:300]}, ensure_ascii=False))
 
    # 6. 后台发起调用（绝不导出 PEER_DEPTH=1，由 peer child_env 自动安全注入）
    if [ "$KIND" = "review" ] || [ "$KIND" = "plan" ] || [ "$KIND" = "advice" ]; then
-     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --caller "Claude Code")
+     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --caller "Claude")
    else
-     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --quote "$QUOTE" --caller "Claude Code")
+     RUN_OUT=$("$PEER_BIN" ask codex "$KIND" --request "$REQ_FILE" --cwd "$PWD" --quote "$QUOTE" --caller "Claude")
    fi
    ASK_STATUS=$?
    echo "$RUN_OUT"

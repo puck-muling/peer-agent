@@ -10,14 +10,14 @@ PeerAgent strictly categorizes tasks into two permission tiers:
 
 ### Read-Only Modes (`review`, `plan`, `advice`)
 * **Codex**: Executed with `--sandbox read-only`. Filesystem writes are physically prevented by the sandbox.
-* **Claude Code**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable.
+* **Claude**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable.
 * **Guarantee**: A read-only review task operates under strict read-only constraints to inspect and report findings without mutating project files.
 
 ### Write Modes (`exec`, `image`)
 * **Explicit Human Quoting**: Write calls require `--quote "<Human Exact Command>"`. PeerAgent refuses to launch write actions based on vague inferences.
 * **Pre-Execution Snapshot**: Before any write task begins, PeerAgent records an in-memory/filesystem snapshot of text files (up to 2MB each, up to 300MB total) in the target workspace, intentionally excluding `.git`, `node_modules`, `venv`, binary files, and sensitive credentials (`.env`, `*.key`, etc.). This acts as a targeted change-tracking baseline rather than a complete disk backup.
 * **Automated Diff Tracking**: When the write task finishes, PeerAgent diffs the workspace against the snapshot and generates `changes.diff` and `changes.md` for human review.
-* **Caution**: In `exec` mode, agents (specifically Claude Code) may execute shell commands permitted within its normal operating profile. Never launch untrusted code generation on sensitive production servers without human inspection.
+* **Caution**: In `exec` mode, agents (specifically Claude) may execute shell commands permitted within its normal operating profile. Never launch untrusted code generation on sensitive production servers without human inspection.
 
 ---
 
