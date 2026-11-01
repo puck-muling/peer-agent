@@ -394,27 +394,28 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 ## 社区与交流
 
-欢迎反馈问题、提出建议或交流使用经验：
+欢迎通过以下渠道反馈问题、交流使用经验与探讨多 Agent 落地实战：
 
 - 🐛 **问题反馈**：[GitHub Issues](https://github.com/puck-muling/peer-agent/issues)
 - 𝕏 **X（Twitter）**：[@puck_muling](https://x.com/puck_muling)
-- ✈️ **Telegram**：[@puckmuling](https://t.me/puckmuling)
-- 💬 **QQ**：2607430010（Puck-Muling）
 
-<table align="center">
-  <tr>
-    <th width="240">💬 QQ 交流</th>
-    <th width="240">✈️ Telegram 交流</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="./docs/assets/qq_qr.jpg" width="200" alt="QQ 联系二维码" /></td>
-    <td align="center"><img src="./docs/assets/telegram_qr.png" width="200" alt="Telegram 二维码" /></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Puck-Muling</b><br /><sub>QQ：2607430010 · 扫码加好友</sub></td>
-    <td align="center"><a href="https://t.me/puckmuling"><b>@puckmuling</b></a><br /><sub>扫码或点击链接</sub></td>
-  </tr>
-</table>
+### 💬 QQ 交流
+
+添加作者 QQ：**2607430010**（Puck-Muling），探讨技术或反馈问题：
+
+<p align="center">
+  <img src="./docs/assets/qq_qr.jpg" width="220" alt="QQ 联系二维码" />
+</p>
+
+### ✈️ Telegram 交流
+
+加入 Telegram 交流群探讨多 Agent 协作实战：[@puckmuling](https://t.me/puckmuling)：
+
+<p align="center">
+  <img src="./docs/assets/telegram_qr.png" width="220" alt="Telegram 二维码" />
+</p>
+
+---
 
 感谢 Claude Code、Codex、Antigravity 团队与分享 Agent 审阅实践的开源贡献者。
 

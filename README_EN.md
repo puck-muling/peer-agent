@@ -398,23 +398,24 @@ Bug reports, suggestions, and usage discussions are all welcome:
 
 - 🐛 **Issues**: [GitHub Issues](https://github.com/puck-muling/peer-agent/issues)
 - 𝕏 **X (Twitter)**: [@puck_muling](https://x.com/puck_muling)
-- ✈️ **Telegram**: [@puckmuling](https://t.me/puckmuling)
-- 💬 **QQ**: 2607430010 (Puck-Muling)
 
-<table align="center">
-  <tr>
-    <th width="240">💬 QQ</th>
-    <th width="240">✈️ Telegram</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="./docs/assets/qq_qr.jpg" width="200" alt="QQ contact QR code" /></td>
-    <td align="center"><img src="./docs/assets/telegram_qr.png" width="200" alt="Telegram QR code" /></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Puck-Muling</b><br /><sub>QQ: 2607430010 · Scan to add</sub></td>
-    <td align="center"><a href="https://t.me/puckmuling"><b>@puckmuling</b></a><br /><sub>Scan or tap the link</sub></td>
-  </tr>
-</table>
+### 💬 QQ
+
+Add author on QQ: **2607430010** (Puck-Muling) for questions and technical discussion:
+
+<p align="center">
+  <img src="./docs/assets/qq_qr.jpg" width="220" alt="QQ contact QR code" />
+</p>
+
+### ✈️ Telegram
+
+Join our Telegram community to discuss multi-agent workflows in practice: [@puckmuling](https://t.me/puckmuling):
+
+<p align="center">
+  <img src="./docs/assets/telegram_qr.png" width="220" alt="Telegram QR code" />
+</p>
+
+---
 
 Thanks to the Claude Code, Codex, and Antigravity teams and open-source contributors sharing agent-review practices.
 
