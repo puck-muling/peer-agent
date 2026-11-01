@@ -1,198 +1,238 @@
+<div align="center">
+
+**简体中文** | [English](README_EN.md)
+
 # PeerAgent 🤝
 
-> **让 Claude 与 Codex 帮彼此审代码 —— 查验真实事实，拒绝盲目附和。**  
-> *专为开发者打造的轻量级、订阅原生、跨模型对等交叉审阅 CLI。*
+**让 Claude Code 和 Codex 互相审代码，少一次复制粘贴，多一份独立意见。**
+
+在当前会话里请另一个模型检查代码，审阅意见直接带回来，省去切窗口和搬运结果。
+
+使用本机官方 CLI · 支持已有订阅登录 · 审阅任务只读 · 核心无需 Python 第三方包
+
+[安装与初次体验](#安装与初次体验) · [使用示例](#使用示例) · [费用与权限边界](#费用与权限边界) · [常见问题与网络排障](#常见问题与网络排障)
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Dependencies: 0 (Pure Stdlib)](https://img.shields.io/badge/dependencies-0%20(pure%20stdlib)-brightgreen.svg)](./bin/peer)
-[![Billing: Subscription Native](https://img.shields.io/badge/billing-subscription%20native-orange.svg)](./README_CN.md)
-[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/puck-muling/peer-agent)
 
-[English Document (README_EN.md)](./README_EN.md) | [安全模型 (SECURITY.md)](./SECURITY.md) | [架构设计详解 (architecture.md)](./docs/architecture.md) | [贡献指南 (CONTRIBUTING.md)](./CONTRIBUTING.md) | [版本历史 (CHANGELOG.md)](./CHANGELOG.md)
+</div>
 
----
+## 演示视频
 
-如果你平时在用 **Claude**，**Codex**，**Antigravity** 这几个程序写代码，你一定经历过这些痛点：
-* 每次让 AI 写完一大段代码，心里总打鼓：“这里面会不会漏了边界条件，或者有隐蔽的 Regression Bug？”
-* 想让另一个大模型帮忙挑刺把关，只能痛苦地**复制代码 → 切换窗口 → 粘贴发问 → 再把结论搬回来**，来回折腾好几轮；
-* 现有的多智能体框架通常需要配置商业 API Key，跑一次交叉审阅产生昂贵的按 Token 计费账单，无法复用已有会员订阅。
+<a href="./docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent 演示视频封面，点击观看" width="100%" /></a>
 
-**装上 PeerAgent 之后，就像把另一个顶级 AI 程序员请到了你的当前终端里：**
+▶ [观看演示视频](./docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
 
-### 在当前终端一句话唤起交叉审阅
+适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.10+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 原生及 WSL 尚无本项目的完整验证记录。
 
-在 **Claude** 会话中：
-```text
-❯ /codex 审阅当前 git diff，重点排查并发竞争与边界条件
-```
+## 安装与初次体验
 
-几秒后，后台无头运行的 **Codex** 原地返回独立审阅报告（只读沙箱，物理禁止修改任何文件）：
-```markdown
-# Codex · 审阅（只读）
+### 先确认你要从哪里调用
 
-- 状态：完成
-- 模型：gpt-6.1-sol
-- 强度：high
-- 登录方式：subscription（Logged in using ChatGPT）
-- 服务提供方：官方
+| 使用方式 | 需要准备什么 |
+| :--- | :--- |
+| 在 Claude Code 会话中输入 `/codex` | 可用的 Claude Code 会话，以及本机已安装、已登录的 Codex CLI |
+| 在 Codex 会话中调用 `/claude` 技能 | 可用的 Codex 会话，以及本机已安装、已登录的 Claude Code CLI |
+| 在 Antigravity 中调用任一模型 | Antigravity 主持环境，以及被调用模型对应的官方 CLI 和登录状态 |
+| 直接用 `peer ask` 调用 | Python 3.10+，以及被调用模型对应的官方 CLI 和登录状态 |
 
-## 回复
+PeerAgent 不替你安装或登录这些 CLI。按需准备后，先确认目标 CLI 能单独运行，再安装 PeerAgent；无需为了单向调用而开通另一条不用的调用渠道。
 
-[src/api.py:42] 发现潜在并发竞争：
-多线程写入 cache 文件时未获取排他锁，高并发下可能导致写入冲突。
-建议：使用 fcntl.flock 保护文件写入或改用原子写入。
-```
+### 30 秒上手命令
 
-同理，在 **Codex** 终端中输入 `/claude`，即可呼叫 Claude 进行代码与方案复核。
+以下是已具备前置环境时的安装入口，下载和首次调用耗时取决于网络与任务大小：
 
----
-
-## 为什么使用 PeerAgent？
-
-| 考量维度 | 传统手动转交 | 商业 API 框架 (LangGraph / CrewAI) | PeerAgent |
-| :--- | :--- | :--- | :--- |
-| **交互流程** | 复制代码、切换标签页、粘贴发问、整理结论 | 需配置复杂编排脚本或常驻服务 | **当前终端一条斜杠命令，结果原地返回** |
-| **计费方式** | 官方订阅（人工繁琐操作） | 需配置 API Key，按 Token 商业计费 | **本机官方 CLI 原生直驱，复用已有会员额度** |
-| **环境依赖** | 无 | 依赖多个重量级第三方包 | **单文件 Python CLI，仅依赖纯标准库** |
-| **防死循环机制** | 人工干预 | 仅依靠轮次上限限制 | **`PEER_DEPTH` 进程染色，子进程嵌套调用物理退出（退出码 2）** |
-| **安全风控机制** | 无 | 通常依赖代码异常抛出 | **物理 `STOP` 停机锁，禁止 AI 自动恢复，保护账号安全** |
-
----
-
-## 两项可核验的安全承诺
-
-1. **纯标准库零外部依赖**：核心调度器 [`bin/peer`](./bin/peer) 为单文件实现，仅 import Python 官方标准库，无需 `pip install` 任何第三方包。
-2. **绝不意外产生 API 账单**：每次调用前强制核对登录状态与已确认方式（默认 `subscription` 会员订阅）。一旦检测到未确认的变动，直接终止调用并提示退出（退出码 3），必须由人类执行 `peer doctor --approve` 确认后方可继续。
-
----
-
-## 安装与上手
-
-> [!TIP]
-> **前置要求**：Python 3.10+（纯标准库，无需 pip 安装三方包）。并确保你常用的工具（Claude、Codex 或 Antigravity）中至少已安装并登录一个即可。
-
-### 0. 准备官方 CLI（按需安装）
-若需要调用对应模型，请确保本机已全局安装官方 CLI 并登录：
-```bash
-# Claude 官方 CLI
-npm install -g @anthropic-ai/claude-code
-claude login
-
-# OpenAI Codex 官方 CLI
-npm install -g @openai/codex
-codex login
-```
-
-### 1. 一键安装
 ```bash
 git clone https://github.com/puck-muling/peer-agent.git
-cd peer-agent && ./install.sh
-```
-
-### 2. 环境与认证自检
-```bash
+cd peer-agent
+./install.sh
 peer doctor
 ```
 
-### 3. 马上体验
-在你的 **Claude** 终端中输入：
+安装默认采用**文件复制**：将 `peer` 复制到 `~/.local/bin/peer` 和 `$PEER_HOME/bin/peer`（`PEER_HOME` 默认是 `~/.peer-review`），并复制模板与各端技能；配置不存在时生成默认配置，还会按 Shell 情况补充 PATH。开发时可显式选择 `./install.sh --link` 使用软链接。复制安装后，修改仓库不会自动更新已安装副本。
+
+如果当前终端还找不到 `peer`，可先用固定路径检查：
+
+```bash
+"$HOME/.local/bin/peer" doctor
+```
+
+`peer doctor` 用于查看 CLI 位置、登录类别和配置等信息。**不要把 `peer doctor --approve` 当作通用修复命令**：它会把当前可识别的登录类别写入批准配置，可能涉及两条调用渠道；请先核实输出和计费方式。
+
+### 发起第一次审阅
+
+安装技能后，重新打开或刷新主持端客户端，确认技能已加载。进入你要审阅的项目，在 **Claude Code** 中输入：
+
 ```text
-/codex 审阅当前 git diff，重点排查异常边界。只读审阅，不要修改任何文件。
+/codex review 审阅当前 git diff，重点检查异常边界。只读，不要修改文件。
 ```
 
----
+在 **Codex** 中可调用 `/claude` 技能（具体入口以客户端技能菜单为准）：
 
-## 典型使用场景
+```text
+/claude review 审阅当前 git diff，检查旧功能是否受影响。只读，不要修改文件。
+```
 
-* **代码提交前查回归**（在 Claude 中）：
-  ```text
-  /codex 审阅当前 git diff，重点排查权限校验、并发与异常边界
-  ```
-* **重构后查调用方遗漏**（在 Codex 中）：
-  ```text
-  /claude 检查所有调用方是否已正确适配新模块的返回值
-  ```
-* **方案实施前核真伪**（在 Antigravity 中）：
-  ```text
-  /codex 先独立核实方案中引用的代码文件与行号是否属实，再评估可行性
-  ```
+下面仅展示可能返回的内容格式，**不是历史任务的原始报告**；路径和行号为示意，实际发现与耗时取决于任务：
 
----
+```markdown
+## 审阅意见（示意）
 
-## 📖 使用指南 (Usage Guide)
+- 位置：src/handler.py:42（示意）
+- 问题：失败分支没有关闭资源，可能导致重复请求后连接耗尽。
+- 待验证：检查调用方是否负责释放，并运行覆盖失败分支的测试。
+```
 
-PeerAgent 支持两种交互方式：**三端无缝斜杠命令（日常最推荐）** 与 **终端 CLI 命令行直接调度（自动化/脚本）**。
+报告回来后先核查问题位置和触发条件，再决定是否修改。另一个模型也可能漏查或判断错误。
 
-### 方式一：斜杠命令原生交互（推荐）
+## 使用示例
 
-安装完成后，无须启动任何常驻后台服务。在你的日常交互界面直接输入斜杠指令即可发起调度：
+| 你想做什么 | 可以怎么说或怎么调用 |
+| :--- | :--- |
+| 请 Codex 检查改动 | `/codex review 审阅当前 git diff，检查并发和异常边界。只读。` |
+| 请 Claude 看重构方案 | `/claude plan 根据当前模块提出重构方案，不要修改文件。` |
+| 批准一个具体修复 | `/codex exec 授权修改：修复刚才确认的资源释放问题，仅改对应函数。` |
+| 生成图片（仅 Codex） | `/codex image 授权生成：画一张调用流程图，保存到项目指定素材目录。` |
+| 保存方案版本和内容指纹 | `peer freeze ./方案-v2.md --cwd .` |
+| 检查环境 | `peer doctor` |
 
-| 发起端 | 常用指令示例 | 底层执行端 | 典型场景 |
-| :--- | :--- | :--- | :--- |
-| **Claude Code** | `/codex 审阅当前 git diff，排查并发与边界条件` | Codex (无头) | 让 Codex 交叉挑刺，防止代码逻辑盲区 |
-| **OpenAI Codex** | `/claude 复核重构模块的命名规范与类型设计` | Claude (无头) | 让 Claude 独立核实结构合理性与回归风险 |
-| **Antigravity** | `/codex 审阅当前代码` 或 `/claude 给出优化方案` | Codex / Claude | 作为主持人统一调度对等交叉审阅与方案制定 |
+### 审阅、方案和执行怎么区分
 
-> [!TIP]
-> **自然语言智能意图路由**：
-> 调度器会自动识别任务意图并切换只读/可写安全沙箱：
-> - 包含“审阅 / 看看 / 检查 / review” → **严格只读沙箱 (`review`)**
-> - 包含“方案 / 怎么做 / 计划 / plan” → **方案构思模式 (`plan`)**
-> - 包含“分析 / 为什么 / 建议 / advice” → **结论与建议模式 (`advice`)**
-> - 包含“修改 / 实现 / 修复 / exec”（需明确授权） → **安全可写沙箱 (`exec`)**，自动备份并对比快照
+斜杠技能按关键词判断意图，属于启发式路由，并不能理解所有自然语言表达。下面的匹配顺序对应 **Claude Code 中的 `/codex` 技能**：
 
----
+1. 开头明确写 `exec` / `review` / `plan` / `advice` / `image` 时按该类型处理；显式 `exec` 遇到只读或禁止修改要求会降级为 `review`。
+2. 未显式指定时，否定词和审阅词优先于修改词。例如“审阅当前修改”“检查修复结果”按 `review` 处理。
+3. 随后依次匹配方案词、出图词、修改词和建议词；未命中时默认 `review`。
 
-### 方式二：终端 CLI 命令行直接调度
+Codex 中的 `/claude` 和 Antigravity 技能使用不同的分类规则，不能假定各端优先级完全相同；以对应技能和实际调用类型为准。需要确定类型时，可直接用 `peer ask` 传入，不经过斜杠技能的意图判断。
 
-适合在系统终端、CI/CD 自动化流水线或脚本中直接唤起：
+`review`、`plan`、`advice` 采用只读执行配置；`exec`、`image` 可写，需要用户授权原话。请写清允许修改哪些文件，并核对发起的任务类型。
+
+### 在终端直接调用
+
+先在项目中准备任务说明文件 `review-task.md`，写清要检查的文件、原始需求和回复要求，例如：
+
+```markdown
+# 任务
+
+只读审阅当前 git diff，重点检查异常处理。不要修改文件。
+
+## 回复格式
+
+列出问题位置、触发条件、依据和仍需验证的事项；没有发现也请明确说明。
+```
+
+然后调用对应 CLI：
 
 ```bash
-# 1. 运行系统环境与认证自检
-peer doctor
+peer ask codex review --request ./review-task.md --cwd .
+```
 
-# 2. 发起只读代码审阅（非阻塞后台运行）
-peer ask codex review --request ./task.md --cwd .
+命令默认后台运行，返回运行编号。将下面的 `RUN_ID` 替换成该编号：
 
-# 3. 等待审阅任务完成并原地输出格式化报告
-peer wait <run_id> --cwd .
-
-# 4. 查看当前项目或全局调用历史状态
-peer status --cwd .
-
-# 5. 查看当日调用次数与 Token 用量统计
+```bash
+peer wait RUN_ID --cwd .
+peer status RUN_ID --cwd .
 peer stats
 ```
 
-<details>
-<summary><b>点击查看：全量 CLI 命令与参数速查表</b></summary>
+`peer wait` 等待超时只表示还没有等到结果，应查询或继续等待原编号；不要重新 `ask`。
 
-| 命令 | 参数 | 说明 |
-| :--- | :--- | :--- |
-| `peer doctor` | `[--approve]` | 检查 Python、CLI、登录状态、模型与熔断锁；`--approve` 用于批准并记住新的登录方式 |
-| `peer ask <agent> <kind>` | `--request <file> --cwd <dir> [--model <m>] [--effort <e>]` | 在后台拉起指定 Agent 执行任务（`kind` 可选：`review` / `plan` / `advice` / `exec`） |
-| `peer wait <run_id>` | `--cwd <dir> [--timeout <sec>]` | 等待后台任务并实时打印结构化审阅报告（只读模式） |
-| `peer status [run_id]` | `--cwd <dir>` | 查看当前工作区最近 10 次调用的运行状态或指定运行编号的详细日志 |
-| `peer freeze <doc>` | `--cwd <dir> [--quote <原话>]` | 对方案文档进行 SHA-256 指纹固化与快照归档，生成交接语 |
-| `peer verify <doc>` | 无 | 校验冻结版方案文档是否遭到篡改 |
-| `peer since-freeze <doc>` | 无 | 对比自方案冻结以来的项目代码改动 diff |
-| `peer stats` | 无 | 汇总显示当天各模型的调用频次、Token 用量与响应耗时 |
+可写任务使用单独的任务说明，并传入用户已经确认的授权原话：
+
+```bash
+peer ask codex exec --request ./fix-task.md --cwd . \
+  --quote '仅修复已确认的资源释放问题'
+```
+
+程序只检查 `--quote` 是否非空，不会判断这段话是否充分授权了每项操作。修改前快照位于 `.peer-review/runs/<运行编号>/snapshot/`，完成后生成 `changes.md` 和 `changes.diff`；快照限制见下文。
+
+### Antigravity 主持双方审阅
+
+可以分别请 Claude 和 Codex 核查相同的源码和需求，再由主持端汇总问题位置、证据和分歧。任务说明要求先查原始证据，避免直接采信已有结论；**这不是操作系统级的盲审隔离**。请求正文会直接传给被调用方，主持端应避免把另一方结论混入独立审阅请求。
+
+方案经人确认后，可保存冻结副本：
+
+```bash
+peer freeze ./方案-v2.md --cwd .
+peer verify ./方案-v2_冻结v001.md
+peer since-freeze ./方案-v2_冻结v001.md
+```
+
+示例假定这是该文档的第一次冻结，实际文件名以输出为准。`freeze` 创建 `*_冻结vNNN.md`、内容指纹、项目快照与交接语；默认是独立模式。可选的 `--review-receipt <目录>` 会校验外部终审回执；未提供回执时，冻结本身不代表已获批准。SHA-256 用于检查内容是否变化，不会阻止文件被编辑，也不是实施授权。
+
+<details>
+<summary>完整命令索引</summary>
+
+| 命令 | 参数与说明 |
+| :--- | :--- |
+| `peer doctor` | `[--approve]`：检查环境；显式批准时记录当前可识别的登录类别 |
+| `peer ask <codex\|claude> <kind>` | `--request <文件> --cwd <目录>`；`kind` 为 `review` / `plan` / `advice` / `exec` / `image`，其中 `image` 仅 Codex 支持 |
+| 调用可选参数 | `--quote <原话>`、`--model <模型>`、`--effort <强度>`、`--service-tier <层级>`、`--add-dir <目录>`、`--caller <名称>`、`--foreground`；可写类型必须有 `--quote` |
+| `peer wait <运行编号>` | `--cwd <目录> [--timeout <秒>]`：等待原任务并显示报告 |
+| `peer status [运行编号]` | `--cwd <目录>`：查看某次任务或最近 10 次任务 |
+| `peer freeze <方案文档>` | `--cwd <目录> [--quote <原话>] [--review-receipt <目录>]`：保存冻结副本与指纹 |
+| `peer verify <冻结版文件>` | 比较冻结副本与记录的 SHA-256 |
+| `peer since-freeze <冻结版文件>` | 比较项目与冻结时快照，并生成改动记录 |
+| `peer stats` | 显示当日调用与可取得的用量统计；不等同于官方账单 |
 
 </details>
 
----
+## 费用与权限边界
 
-## ⚙️ 进阶配置指南 (Configuration)
+| 机制 | 实际做什么 | 需要知道的限制 |
+| :--- | :--- | :--- |
+| 登录类别检查 | 调用前比较当前类别与 `approved_auth`，不一致时停止，退出码 3 | 不能验证授权范围、可用余额或最终账单。支持已有 CLI 订阅登录，仍消耗额度；API 登录按相应规则计费 |
+| 只读任务 | 给 Codex 设置 `read-only` 沙箱；给 Claude 限制工具和 Bash 沙箱权限，并在任务说明中要求只读 | 依赖目标 CLI 与系统沙箱实现；PeerAgent 仍会写入任务、日志等过程文件，不代表整台机器不写文件 |
+| 可写授权 | `exec` / `image` 要求非空授权引文，使用可写配置 | 引文存在不等于程序理解了授权；实施范围仍需人和执行方核对 |
+| 改前快照 | 保存可复制的文本内容并记录文件信息，改后对比 | 跳过部分目录和疑似敏感内容；大文件、二进制与总量等有限制，不是完整备份或自动回滚 |
+| 防递归标记 | 子进程继承 `PEER_DEPTH` 后，嵌套 `peer ask` 被拒绝，退出码 2 | 只覆盖经过该入口且保留标记的调用，不能阻止所有可能的模型循环 |
+| STOP 文件 | 检测到特定封禁或地区错误后，阻止该渠道的后续调用 | 依赖错误匹配，不能保证避免封号；需人工排查，Agent 不应自动删除 STOP 文件 |
+| 独立审阅要求 | 提示审阅者先查源码、需求和 diff，再判断主张 | 不保证模型意见正确、互不影响或必然达成共识 |
 
-PeerAgent 的设计哲学是**“开箱即用，零配可用”**（默认自动跟随客户端已有设置）。如果你需要指定特定的模型代系、调整思考深度或配置本地代理，可以通过配置文件进行深度定制。
+快照默认跳过 `.git`、`node_modules`、`.peer-review` 等目录。单个文本文件超过 2 MiB 不复制，超过 64 MiB 的文件只记录大小和修改时间；复制总量上限 300 MiB，文件数上限 40,000。具体规则见 [`bin/peer`](./bin/peer)，完整权限说明见 [SECURITY.md](./SECURITY.md)。
 
-### 配置文件位置
-- **默认路径**：`~/.peer-review/config.json`（安装脚本会自动生成默认配置）
-- **自定义路径**：可通过环境变量 `PEER_CONFIG` 指定自定义配置文件路径。
+## 常见问题与网络排障
 
-### 完整配置范例 (`config.json`)
+### 找不到 `peer` 或目标 CLI
+
+重开终端使 PATH 生效，或使用前面的 `~/.local/bin/peer` 固定路径。目标模型仍提示找不到命令时，确认对应 CLI 已安装，且启动主持端的环境能找到它；必要时将配置的 `bins.claude` / `bins.codex` 改为实际可执行文件的绝对路径。PATH 或配置改完后，重启主持端再检查。
+
+### 未登录，或提示登录类别不一致
+
+先在原渠道的官方 CLI 中核实登录状态；未登录时按该 CLI 的流程登录，再运行 `peer doctor`。若你有意改变了登录方式，先确认订阅/API 与计费预期，再由本人决定是否执行 `peer doctor --approve`。它记录可识别的当前类别，不修复网络、额度或账号权限。
+
+### 安装了，但 `/codex` 或 `/claude` 没出现
+
+刷新或重开主持端，检查技能是否加载到了该客户端实际使用的配置目录。安装器复制到默认的 Claude、Codex 和 Antigravity 技能目录；使用自定义配置目录时，需要按客户端设置核对。斜杠菜单的显示方式以客户端版本为准，也可先用 `peer ask` 排查调度链路。
+
+### 国内网络下，代理端口能连但请求仍失败
+
+`proxy_check` **只用 TCP 连接探测指定的主机和端口**，不自动设置代理，也不检查 HTTP/SOCKS 协议、认证、DNS、TLS 或官方模型服务是否可达。可以按本机实际端口配置：
+
+```json
+{
+  "proxy_check": ["127.0.0.1", 7890]
+}
+```
+
+这仅让 `peer doctor` 检查端口。代理地址、协议和环境变量要在运行官方 CLI 的环境中另行配置；子进程会继承环境，但目标 CLI 是否采用这些设置取决于它自身的实现。先在同一终端验证官方 CLI 的网络状态，再检查主持端是否继承相同环境。代理软件启用了，不代表从桌面打开的客户端也拿到了终端环境变量。
+
+CLI 安装包下载与模型服务访问是两条链路。安装成功不代表模型服务可达；遇到代理超时，先检查端口、协议和目标服务。这里不提供未经验证的镜像或绕过服务限制的方案。
+
+### 任务超时，或状态是 `unknown`
+
+先用原运行编号执行 `peer status`，检查该任务目录中的状态、报告和错误文件；等待超时可继续 `peer wait`。`unknown` 表示进程已结束但结果没有回收，不代表请求未提交。结果不明时不要重发或切账号；先核查原任务和原账号，确认未受理并获得重试授权后再发新请求。PeerAgent 不自动重试。
+
+### 模型或强度不受支持
+
+默认模型留空并跟随客户端设置；配置中 Codex 强度默认固定为 `high`。指定模型、强度前先确认目标 CLI 支持。优先级为：本次参数 > 配置固定值 > 客户端设置 > CLI 默认值。PeerAgent 接受参数不代表目标服务一定支持。
+
+## 配置参考
+
+默认配置位于 `~/.peer-review/config.json`，也可用 `PEER_CONFIG` 指向其他文件。完整默认值如下，字段与 [`config.example.json`](./config.example.json) 一致：
+
 ```json
 {
   "bins": {
@@ -228,118 +268,84 @@ PeerAgent 的设计哲学是**“开箱即用，零配可用”**（默认自动
 }
 ```
 
-### 配置项详细说明
+| 配置项 | 说明 |
+| :--- | :--- |
+| `bins` | 目标 CLI 命令名或绝对路径 |
+| `models` | 固定模型；空字符串表示尝试跟随客户端，不写死模型名称 |
+| `efforts` | 固定推理强度；空字符串表示尝试跟随客户端，具体取值由目标 CLI 支持情况决定 |
+| `service_tiers.codex` | 当前调度器只接受 `default` 或 `flex`；默认 `default` |
+| `follow_app_settings` | 允许在对应配置留空时读取客户端设置 |
+| `approved_auth` | 已批准的登录类别，默认均为 `subscription`；不一致时阻止调用 |
+| `max_turns` | 当前用于 Claude CLI 的最大轮次参数，不是两端通用的循环保证 |
+| `timeout_minutes` | 读/写任务最长运行时间（分钟），到期终止子进程；不证明远端未处理请求 |
+| `proxy_check` | 可选 `[主机, 端口]` TCP 检测，不配置代理 |
+| `codex_disable_apps` | 传参禁用 Codex Apps；默认 `false`，生图任务会单独禁用 |
 
-| 配置键名 | 类型 | 默认值 | 作用说明 |
-| :--- | :--- | :--- | :--- |
-| `bins` | `object` | `{"claude":"claude", "codex":"codex"}` | 指定底层的可执行命令名或绝对路径。如果安装在非标准目录可填绝对路径（如 `/usr/local/bin/claude`）。 |
-| `models` | `object` | `{"claude":"", "codex":""}` | 固定指定模型代系。留空 `""` 表示自动跟随客户端当前设置；亦可显式指定（如 `"claude": "claude-3-5-sonnet-20241022"`、`"codex": "gpt-4o"`）。 |
-| `efforts` | `object` | `{"claude":"", "codex":"high"}` | 深度思考/推理强度。可选值：`low`（低）、`medium`（中）、`high`（高）、`xhigh`（超高）。 |
-| `service_tiers` | `object` | `{"codex":"default"}` | Codex 客户端服务层级，通常保留 `"default"`。 |
-| `follow_app_settings`| `boolean` | `true` | 当 `models` 或 `efforts` 为空时，是否自动读取并继承客户端原生的当前激活设置。 |
-| `approved_auth` | `object` | `{"claude":"subscription", "codex":"subscription"}` | **防盗刷/防账单核心锁**：已批准的登录方式。若实际登录方式与之不符，调度器物理阻断（退出码 3），须人工运行 `peer doctor --approve` 确认后方可调用。 |
-| `max_turns` | `object` | `{"read": 20, "write": 120}` | 单次任务最大对话轮次物理上限，杜绝死循环消耗额度。 |
-| `timeout_minutes` | `object` | `{"read": 30, "write": 60}` | 任务最长执行超时时间（分钟），超时后自动安全终止子进程并回收资源。 |
-| `proxy_check` | `array\|null`| `null` | 本地代理连通性检查。可配置如 `["127.0.0.1", 7890]`，在 `peer doctor` 时校验代理存活状态。 |
-| `codex_disable_apps` | `boolean` | `false` | 是否禁用 Codex 扩展插件/Apps。设为 `true` 可确保审阅处于最精简纯粹的代码分析环境。 |
+如果只想固定高强度、继续跟随模型设置，可合并下面的配置片段：
 
----
-
-### 3 种高频实用配置配方 (Recipes)
-
-#### 配方 1：固定高强度深度审阅模型
-如果你希望无论交互终端当前设置是什么，后台交叉审阅时都固定使用顶级模型与高强度思考：
 ```json
 {
-  "models": {
-    "claude": "claude-3-5-sonnet-20241022",
-    "codex": "gpt-6.1-sol"
-  },
-  "efforts": {
-    "claude": "high",
-    "codex": "high"
-  }
+  "efforts": {"claude": "high", "codex": "high"}
 }
 ```
 
-#### 配方 2：配置本地代理网络检查
-在需要通过本地 HTTP/SOCKS 代理访问官方服务的网络环境下，让 `peer doctor` 自动检查代理端口：
-```json
-{
-  "proxy_check": ["127.0.0.1", 15236]
-}
-```
+若主动改用官方 API 登录，先在对应 CLI 完成并确认，再核对 `peer doctor` 输出后决定是否批准新类别；不要仅为了消除报错而批准。
 
-#### 配方 3：切换为官方 API Key 模式
-如果你选择使用官方 API Key 而非会员订阅，在完成 CLI 的 API 登录后，更新批准模式并保存：
-```bash
-# 确认当前登录变更为 API 模式后，直接批准更新配置：
-peer doctor --approve
-```
-对应 `config.json` 将自动记录：
-```json
-{
-  "approved_auth": {
-    "claude": "api",
-    "codex": "api"
-  }
-}
-```
+### 环境变量
 
----
+| 环境变量 | 默认值与用途 |
+| :--- | :--- |
+| `PEER_HOME` | 默认 `~/.peer-review`，存放配置、模板和全局调用日志 |
+| `PEER_CONFIG` | 默认 `$PEER_HOME/config.json`，指定配置文件 |
+| `PEER_TEMPLATES_DIR` | 覆盖模板目录；默认优先程序所在仓库的 `templates/`，否则用 `$PEER_HOME/templates` |
+| `PEER_DEPTH` | 默认 0，由调度器为子进程增加深度标记，用于拒绝嵌套调用 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 继承启动环境中的值；是否生效由目标 CLI 决定，PeerAgent 不自动设置 |
 
-## 🌐 环境变量参考 (Environment Variables)
+## 里面有什么与工作原理
 
-PeerAgent 遵循 POSIX 标准，支持通过环境变量灵活定制运行时行为：
+| 组成 | 路径与说明 |
+| :--- | :--- |
+| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,028 行，仅用 Python 标准库，无常驻守护进程 |
+| CLI 适配技能 | [`skills/`](./skills/)，适配 Claude Code、Codex 与 Antigravity，非这些厂商官方出品 |
+| 任务模板 | [`templates/`](./templates/)，共 5 份：`review.md`、`plan.md`、`advice.md`、`exec.md`、`image.md` |
+| 安装器 | [`install.sh`](./install.sh)，默认文件复制，可显式选择软链接 |
+| 测试 | [`tests/`](./tests/)，核心行为的测试用例 |
+| 架构说明 | [`docs/architecture.md`](./docs/architecture.md)，设计细节和图解 |
 
-| 环境变量 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `PEER_HOME` | `~/.peer-review` | PeerAgent 数据主目录，包含配置文件、模板库与全局调用审计日志。 |
-| `PEER_CONFIG` | `$PEER_HOME/config.json` | 显式指定 `config.json` 的绝对路径。 |
-| `PEER_TEMPLATES_DIR` | `$PEER_HOME/templates` | 任务 Prompt 模板目录（内置 `review.md`, `plan.md`, `advice.md`, `exec.md`）。 |
-| `PEER_DEPTH` | `0` | **防递归调用环境变量**：由调度器在派生子进程时自动注入。若大于等于 1，子进程再次调用 peer 时将被物理拦截（退出码 2）。 |
-| `HTTP_PROXY` / `HTTPS_PROXY` | 系统默认 | 调度器拉起子进程时自动继承当前 Shell 的标准网络代理配置。 |
-
----
-
-## 系统架构与工作原理
+调用流程是：保存任务说明 → 检查登录类别、STOP 和调用深度 → 启动本机 CLI → 保存结果并返回报告。Claude Code、Codex 和 Antigravity 都能发起请求，实际执行端是本机 Claude / Codex CLI。
 
 <details>
-<summary><b>点击展开：调用拓扑、审阅时序与证据优先协议</b></summary>
+<summary>架构图与现有演示素材</summary>
 
 ![调用拓扑](./docs/diagrams/topology.svg)
 
-* **三端发起，两端执行**：Antigravity、Claude 和 Codex 均可作为交互发起端；实际无头执行端为本机安装的 Claude 与 Codex。单文件 `peer` 使用 Python 标准库与工作区文件协议调度，无常驻后台守护进程。
+![审阅时序](./docs/diagrams/review_sequence.svg)
 
-![单次审阅时序](./docs/diagrams/review_sequence.svg)
+![证据核查流程](./docs/diagrams/evidence_first_protocol.svg)
 
-* **时序与防递归机制**：任务先落盘并经过 STOP 停机锁与 PEER_DEPTH 门禁；元数据写入后，临时后台 `_run` 启动无头 CLI、捕获 Stdio 并生成报告。子进程尝试二次调用时，继承的深度标记触发退出码 2 立即拦截。
+以下是现有演示封面，画面包含机器人出图及重绘界面，**不是代码审阅实录**。图中历史宣传文字不作为能力承诺；当前行为与边界以本页及源码为准。
 
-![证据优先协议](./docs/diagrams/evidence_first_protocol.svg)
+<img src="./docs/assets/hero.jpg" alt="现有演示封面，含重绘界面和生图场景" width="100%" />
 
-* **证据优先独立审阅**：任务书排版先列用户原话、代码行号与真实 Git Diff，再列待审假设。审阅者先独立核验客观证据，再给出事实、结论与独立性自述，最终由人类主持人核验决策。
-
-详细系统设计请阅读 [架构设计文档 (docs/architecture.md)](./docs/architecture.md)。
 </details>
 
----
+## 为什么写这个工具
 
-## 社区与交流 (Community)
+写完代码后，我们经常想请另一个模型再看一遍，但复制代码、切窗口、搬回意见很麻烦。PeerAgent 把这一步接到现有会话里，使用本机已登录的 CLI，减少重复操作。
 
-关注作者 X (Twitter) 或加入 Telegram 交流群探讨多 Agent 落地实战：
+如果只是想在现有 CLI 之间多做一次代码检查，可以先试它。需要复杂任务编排时，再按具体需求选择工具。多一个模型不代表结论就一定正确，最后仍由你判断。
+
+## 社区与交流
+
+欢迎通过 [GitHub Issues](https://github.com/puck-muling/peer-agent/issues) 反馈问题，或添加 QQ：2607430010（Puck-Muling）。也可在 [X（@puck_muling）](https://x.com/puck_muling) 和 [Telegram（@puckmuling）](https://t.me/puckmuling) 交流。
 
 <p align="center">
-  <a href="https://x.com/puck_muling"><b>Twitter (@puck_muling)</b></a> &nbsp;·&nbsp; 
-  <a href="https://t.me/puckmuling"><b>Telegram (@puckmuling)</b></a>
+  <img src="./docs/assets/qq_qr.jpg" height="220" alt="QQ 联系二维码" />
+  <img src="./docs/assets/telegram_qr.png" height="220" alt="Telegram 二维码" />
 </p>
 
-<p align="center">
-  <img src="./docs/assets/telegram_qr.png" width="140" alt="Telegram QR Code" />
-</p>
-
----
+感谢 Claude Code、Codex、Antigravity 团队与分享 Agent 审阅实践的开源贡献者。
 
 ## 许可证与安全
 
-本项目采用 [MIT 许可证](./LICENSE) 开源。  
-安全模型声明与漏洞报告指引详见 [SECURITY.md](./SECURITY.md)。
+本项目采用 [MIT 许可证](./LICENSE)。安全说明与问题报告方式见 [SECURITY.md](./SECURITY.md)。

@@ -5,11 +5,13 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -24,7 +26,25 @@ sys.modules["peer"] = peer
 _loader.exec_module(peer)
 
 
+def run_skill_router(text, workdir):
+    """执行技能文件中的路由代码，避免用测试内的副本掩盖真实回归。"""
+    skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
+    with open(skill_file, encoding="utf-8") as f:
+        content = f.read()
+    code = re.search(r"python3 -c '\n(.*?)\n' \"\$REQ_FILE\"", content, re.S).group(1)
+    request = os.path.join(workdir, "request.md")
+    with open(request, "w", encoding="utf-8") as f:
+        f.write("# 任务\n%s\n" % text)
+    return subprocess.run([sys.executable, "-c", code, request],
+                          capture_output=True, text=True, check=True)
+
+
 class TestPeerCore(unittest.TestCase):
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = tmp.name
 
     def test_depth_tracking(self):
         """测试防递归调用的深度标记"""
@@ -73,7 +93,7 @@ class TestPeerCore(unittest.TestCase):
 
     def test_write_stop_lock_no_name_error(self):
         """测试写入熔断停机锁（验证 PEER_HOME 正确引用，绝无 NameError）"""
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = self.test_dir
         orig_home = peer.PEER_HOME
         try:
             peer.PEER_HOME = tmp_dir
@@ -84,10 +104,9 @@ class TestPeerCore(unittest.TestCase):
                 self.assertIn("Test trigger reason", f.read())
         finally:
             peer.PEER_HOME = orig_home
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_claude_skill_intent_parsing(self):
-        """测试 Claude 端技能的真实 Python 意图解析逻辑（完全免疫 shell 注入且正确识别否定词与方案）"""
+        """测试 Claude 端技能的真实 Python 意图解析逻辑。"""
         test_cases = [
             ("exec 修改这个函数", "exec"),
             ("review 审阅 README", "review"),
@@ -105,45 +124,19 @@ class TestPeerCore(unittest.TestCase):
             ("echo $(whoami)", "review"),  # 确保无 shell 命令注入
         ]
 
-        def parse_intent(content):
-            lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
-            raw = " ".join(lines)
-            first_word = raw.split()[0].lower() if raw.split() else ""
-
-            is_strictly_readonly = any(w in raw for w in [
-                "只读", "仅审阅", "仅查看", "仅分析", "仅排查", "不要改", "不要修改",
-                "无需修改", "不用修改", "不得修改", "严禁修改", "禁止修改", "请勿修改",
-                "不修改", "只查", "只看", "评估", "是否需要", "是否应当"
-            ])
-
-            if first_word in ("exec", "review", "plan", "advice", "image"):
-                return "review" if (first_word == "exec" and is_strictly_readonly) else first_word
-            elif is_strictly_readonly:
-                return "review"
-            elif any(w in raw for w in ["出方案", "出计划", "设计方案", "怎么做", "出个计划", "重构方案", "方案", "计划"]):
-                return "plan"
-            elif any(w in raw for w in ["生图", "生成图片", "出图", "画一张", "做一张", "出海报", "做立绘"]):
-                return "image"
-            elif any(w in raw for w in ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "修掉", "改一下"]):
-                return "exec"
-            elif any(w in raw for w in ["为什么", "怎么看", "分析一下", "给个建议", "给个结论", "结论", "建议"]):
-                return "advice"
-            else:
-                return "review"
-
         for prompt, expected in test_cases:
-            res = parse_intent(prompt)
-            self.assertEqual(res, expected, f"Failed on prompt: '{prompt}', got: '{res}' instead of '{expected}'")
+            with self.subTest(prompt=prompt):
+                res = run_skill_router(prompt, self.test_dir)
+                self.assertEqual(json.loads(res.stdout)["kind"], expected)
 
 
 class TestPeerExtended(unittest.TestCase):
     """扩展测试用例：覆盖快照对比、项目安全边界、配置读写、用量统计及 CLI 烟雾测试"""
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir, ignore_errors=True)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = tmp.name
 
     def test_project_root_security(self):
         """测试根目录、家目录及桌面目录安全校验"""
@@ -352,33 +345,183 @@ class TestPeerExtended(unittest.TestCase):
 
     def test_oauth_token_auth_state(self):
         """测试 Claude Code 官方 oauth_token 登录态能够被正确识别为 subscription"""
-        from unittest.mock import patch
-        with patch.object(peer, "run_quick", return_value=(0, '{"loggedIn": true, "authMethod": "oauth_token", "subscriptionType": "pro"}', "")):
+        with patch.dict(os.environ, {}, clear=True), patch.object(peer, "run_quick", return_value=(0, '{"loggedIn": true, "authMethod": "oauth_token", "subscriptionType": "pro"}', "")):
             cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
             self.assertEqual(cat, "subscription")
             self.assertIn("oauth_token", desc)
 
+    def test_claude_auth_detects_key_before_environment_filtering(self):
+        """检测原始环境中的 Key，但不改变子进程的过滤策略或泄露凭证。"""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-only-key"}, clear=True):
+            with patch.object(peer, "run_quick") as run:
+                cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
+            self.assertEqual(cat, "api")
+            self.assertIn("将被忽略", desc)
+            self.assertNotIn("test-only-key", desc)
+            self.assertNotIn("ANTHROPIC_API_KEY", peer.child_env())
+            run.assert_not_called()
+
+    def test_codex_key_without_login_remains_unknown_with_guidance(self):
+        """有 Key 但未登录时仍阻断，不以环境变量代替已确认的登录状态。"""
+        for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
+            with self.subTest(key=key), patch.dict(os.environ, {key: "test-only-key"}, clear=True):
+                with patch.object(peer, "run_quick", return_value=(1, "", "Not logged in")):
+                    cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "codex")
+                self.assertEqual(cat, "unknown")
+                self.assertIn("先运行 codex login --with-api-key，再运行 peer doctor --approve", desc)
+                self.assertNotIn("test-only-key", desc)
+
+    def test_codex_known_login_categories_are_preserved(self):
+        for status, expected in [("Logged in using ChatGPT", "subscription"),
+                                 ("Logged in using an API key", "api")]:
+            with self.subTest(status=status), patch.dict(os.environ, {}, clear=True):
+                with patch.object(peer, "run_quick", return_value=(0, "", status)):
+                    cat, _ = peer.auth_state(peer.DEFAULT_CONFIG, "codex")
+                self.assertEqual(cat, expected)
+
+    def test_doctor_does_not_approve_unknown_codex_key(self):
+        """doctor 展示登录引导，--approve 不能批准 unknown 状态。"""
+        cfg = json.loads(json.dumps(peer.DEFAULT_CONFIG))
+        cfg["bins"] = {"codex": sys.executable, "claude": "/nonexistent/claude"}
+        stops = {name: os.path.join(self.test_dir, name) for name in
+                 ("STOP_LOCK_PATH", "STOP_CODEX_PATH", "STOP_CLAUDE_PATH", "IMAGE_COOLDOWN_PATH")}
+        output = StringIO()
+        args = type("DoctorArgs", (), {"approve": True})()
+        with patch.dict(os.environ, {"CODEX_API_KEY": "test-only-key"}, clear=True), \
+             patch.multiple(peer, **stops), \
+             patch.object(peer, "load_config", return_value=cfg), \
+             patch.object(peer, "run_quick", return_value=(1, "", "Not logged in")), \
+             patch.object(peer, "resolve_model_effort", side_effect=peer.PeerError("test config")), \
+             patch.object(peer, "save_config") as save, redirect_stdout(output):
+            peer.cmd_doctor(args)
+        self.assertIn("codex login --with-api-key", output.getvalue())
+        self.assertIn("登录方式无法识别，未记录", output.getvalue())
+        self.assertNotIn("test-only-key", output.getvalue())
+        self.assertEqual(save.call_args.args[0]["approved_auth"]["codex"], "subscription")
+
+    def test_linux_installer_profile_path_is_persistent_and_idempotent(self):
+        """模拟 Linux：.bashrc 提前 return，登录配置仍持久化且重复运行不追加。"""
+        with open(os.path.join(REPO_DIR, "install.sh"), encoding="utf-8") as f:
+            source = f.read()
+        function = source[source.index("configure_path_if_needed() {"):source.index('echo "==> 4.')]
+        profile = os.path.join(self.test_dir, ".profile")
+        bashrc = os.path.join(self.test_dir, ".bashrc")
+        with open(bashrc, "w", encoding="utf-8") as f:
+            f.write('case $- in *i*) ;; *) return;; esac\n')
+        env = dict(os.environ, HOME=self.test_dir, SHELL="/bin/bash", PATH="/usr/bin:/bin")
+        script = ('set -eu\nuname() { echo Linux; }\nLOCAL_BIN="$HOME/.local/bin"\n'
+                  + function + '\nconfigure_path_if_needed\nconfigure_path_if_needed\n')
+        res = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        with open(profile, encoding="utf-8") as f:
+            self.assertEqual(f.read().count('export PATH="$HOME/.local/bin:$PATH"'), 1)
+        with open(bashrc, encoding="utf-8") as f:
+            self.assertEqual(f.read().count('export PATH="$HOME/.local/bin:$PATH"'), 1)
+        res = subprocess.run(["bash", "-c", '. "$HOME/.profile"; printf "%s" "$PATH"'],
+                             env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(res.stdout.split(":")[0], os.path.join(self.test_dir, ".local/bin"))
+        # 当前会话 PATH 已就绪也不能跳过 .profile 的持久化。
+        other = os.path.join(self.test_dir, "new-home")
+        os.makedirs(other)
+        env.update(HOME=other, PATH=other + "/.local/bin:/usr/bin:/bin")
+        res = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        with open(os.path.join(other, ".profile"), encoding="utf-8") as f:
+            self.assertEqual(f.read().count('export PATH="$HOME/.local/bin:$PATH"'), 1)
+
+    def test_installer_old_python_guidance_matches_platform(self):
+        """模拟 Python 3.9，分别检查 Linux 与 macOS 的提示及失败退出码。"""
+        with open(os.path.join(REPO_DIR, "install.sh"), encoding="utf-8") as f:
+            source = f.read()
+        check = source[source.index('PY_VER='):source.index('echo "   Python 版本:')]
+        stub = 'python3() { if [[ "$2" == *"print(1 if"* ]]; then echo 0; else echo 3.9; fi; }\n'
+        for system in ("Linux", "Darwin"):
+            with self.subTest(system=system):
+                script = 'set -eu\nuname() { echo ' + system + '; }\n' + stub + check
+                res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 1, res.stderr)
+                self.assertIn("3.9", res.stderr)
+                if system == "Linux":
+                    for tool in ("apt", "dnf", "pacman", "pyenv", "uv"):
+                        self.assertIn(tool, res.stderr)
+                    self.assertNotIn("brew", res.stderr)
+                    self.assertNotIn("downloads/macos", res.stderr)
+                else:
+                    self.assertIn("brew install python", res.stderr)
+
     def test_claude_skill_bash_evaluation(self):
-        """测试 skills/claude/codex/SKILL.md 中的落盘逻辑在真实 Bash 环境下能正确展开变量"""
-        import subprocess, tempfile
+        """普通请求中的命令替换在真实 Bash 落盘时保持字面量。"""
         skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
         self.assertTrue(os.path.exists(skill_file))
         with open(skill_file, "r", encoding="utf-8") as f:
             content = f.read()
-        self.assertNotIn("cat << 'PEER_EOF'", content, "严禁在任务写入中再次出现阻止变量求值的单引号 Heredoc")
-        self.assertIn("printf '# 任务\\n%s\\n'", content)
+        # Claude Code 会在执行前把 $ARGUMENTS 做文本替换，所以必须用带引号的 heredoc 原样落盘，不能再包进双引号里求值
+        self.assertNotIn("printf '# 任务\\n%s\\n' \"$ARGUMENTS\"", content)
+        self.assertIn("<<'PEER_ARGUMENTS_EOF_7f3a9c'", content)
 
-        # 模拟真实 Bash 执行
-        test_script = """
-        ARGUMENTS="真实用户测试任务指令_98765"
-        REQ_FILE=$(mktemp)
-        printf '# 任务\\n%s\\n' "$ARGUMENTS" > "$REQ_FILE"
-        grep "真实用户测试任务指令_98765" "$REQ_FILE"
-        rm -f "$REQ_FILE"
-        """
-        res = subprocess.run(["bash", "-c", test_script], capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0)
-        self.assertIn("真实用户测试任务指令_98765", res.stdout)
+        # 取出 SKILL.md 中真实的落盘片段，模拟 Claude Code 的文本替换后在 Bash 中执行
+        start = content.index("   REQ_DIR=")
+        end = content.index("   # 5. 安全提取意图")
+        snippet = "\n".join(l[3:] if l.startswith("   ") else l for l in content[start:end].splitlines())
+        marker = os.path.join(self.test_dir, "injected")
+        hostile = "审阅 `touch %s` $(touch %s) $HOME \"q\" 'r'" % (marker, marker)
+        script = "set -e\ncd \"$1\"\n" + snippet.replace("$ARGUMENTS", hostile) + "\ncat \"$REQ_FILE\"\n"
+        workdir = self.test_dir
+        res = subprocess.run(["bash", "-c", script, "bash", workdir], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn(hostile, res.stdout)
+        self.assertFalse(os.path.exists(marker), "用户参数中的命令替换被意外执行")
+
+    def test_claude_skill_routing_review_verbs_beat_edit_words(self):
+        """审阅类动词必须优先于修改类词，避免“审阅当前修改”被误升级为 exec"""
+        cases = {"审阅当前修改": "review", "检查修复结果": "review", "review the fix": "review",
+                 "不要修改，看看方案": "review", "修复登录问题": "exec", "实现导出功能": "exec",
+                 "exec 修复 bug": "exec", "exec 只读检查": "review", "出个方案": "plan", "给个建议": "advice"}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                out = run_skill_router(text, self.test_dir).stdout
+                self.assertEqual(json.loads(out)["kind"], expected)
+
+    def test_claude_skill_spaced_negations_stay_readonly(self):
+        """隔字否定必须保持只读，包括显式 exec 与英文否定。"""
+        cases = [
+            "不要对代码做任何修改，给个建议", "不许修改任何文件",
+            "请勿对文件进行修改，只给建议", "不得对当前项目做任何修改",
+            "无需对源码进行重构", "别对配置做任何编辑", "禁止对文件写入内容",
+            "exec 不要对代码做任何修改", "exec 请勿对文件进行修改",
+            "exec do not modify any files", "exec don't change the code",
+            "exec without editing files", "exec never write files",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                res = run_skill_router(text, self.test_dir)
+                self.assertEqual(json.loads(res.stdout)["kind"], "review")
+                self.assertIn("已按只读处理", res.stderr)
+
+    def test_claude_skill_english_review_word_boundaries(self):
+        """英文审阅词独立匹配，不把 checksum/preview 等误判为审阅。"""
+        cases = {
+            "实现 checksum 功能": "exec", "修复 preview 界面": "exec",
+            "重构 different 模块": "exec", "实现 auditing 功能": "exec",
+            "修复 inspection 模块": "exec", "修改 checklist": "exec",
+            "REVIEW 当前修改": "review", "inspect 当前修改": "review",
+            "audit 当前修改": "review", "diff 当前修改": "review",
+            "check 当前修改": "review", "exec 修复 diff 显示错乱": "exec",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                res = run_skill_router(text, self.test_dir)
+                self.assertEqual(json.loads(res.stdout)["kind"], expected)
+                if expected == "review":
+                    self.assertIn("已按只读处理", res.stderr)
+                else:
+                    self.assertEqual(res.stderr, "")
+
+    def test_claude_readonly_sandbox_fails_closed(self):
+        """Claude 只读沙箱不可用时必须直接失败，不得静默退回无沙箱"""
+        with open(os.path.join(REPO_DIR, "bin", "peer"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('"failIfUnavailable": True', src)
 
     def test_doctor_exit_code_on_missing_tools(self):
         """测试当没有任何 CLI 工具可用时，doctor 命令必须以非零（2）退出码阻断"""

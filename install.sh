@@ -132,9 +132,14 @@ PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))
 PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
 if [ "$PY_CHECK" != "1" ]; then
   echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: ${PY_VER}）。" >&2
-  echo "👉 macOS 升级建议（二选一）：" >&2
-  echo "   1. 运行 Homebrew 安装: brew install python" >&2
-  echo "   2. 访问官网下载安装包: https://www.python.org/downloads/macos/" >&2
+  if [ "$(uname -s)" = "Linux" ]; then
+    echo "👉 Linux 升级建议：通过系统包管理器 apt / dnf / pacman 安装 Python 3.10+。" >&2
+    echo "   若系统仓库版本过旧，可用 pyenv 或 uv 安装 Python 3.10+，并确保 python3 指向新版本。" >&2
+  else
+    echo "👉 macOS 升级建议（二选一）：" >&2
+    echo "   1. 运行 Homebrew 安装: brew install python" >&2
+    echo "   2. 访问官网下载安装包: https://www.python.org/downloads/macos/" >&2
+  fi
   exit 1
 fi
 echo "   Python 版本: ${PY_VER} (符合 >= 3.10 要求)"
@@ -156,7 +161,7 @@ if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; th
   echo "💡 提示: 未检测到任何已安装的官方 CLI（Claude 或 Codex）。"
   echo "   PeerAgent 需驱动本机官方 CLI 进行对等审阅，建议至少安装并登录一个："
   echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
-  echo "   - 安装 Claude: npm install -g @anthropic-ai/claude-code && claude login"
+  echo "   - 安装 Claude: npm install -g @anthropic-ai/claude-code && claude auth login"
 fi
 
 echo "==> 2. 初始化目标目录与核心组件..."
@@ -204,6 +209,16 @@ safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skil
 echo "   [Codex]   已安装 /claude 技能。"
 
 configure_path_if_needed() {
+  # Linux 登录 shell 读取 .profile；不受 .bashrc 非交互提前 return 的影响。
+  # 即使当前 PATH 已包含目标目录，也确保后续登录可以加载配置。
+  if [ "$(uname -s)" = "Linux" ]; then
+    if ! grep -Fq '.local/bin' "$HOME/.profile" 2>/dev/null; then
+      printf '\n# PeerAgent CLI PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.profile"
+      echo "   ✅ 已将 PATH 配置写入 ~/.profile，后续登录时生效。"
+    fi
+    echo "提示: 非登录、非交互 shell 未必读取 ~/.profile；此时可使用 $LOCAL_BIN/peer。"
+  fi
+
   if [[ ":$PATH:" == *":$LOCAL_BIN:"* ]]; then
     echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
     return
@@ -217,7 +232,7 @@ configure_path_if_needed() {
   fi
 
   if [ -n "$rc_file" ]; then
-    if ! grep -q "$LOCAL_BIN" "$rc_file" 2>/dev/null; then
+    if ! grep -Fq '.local/bin' "$rc_file" 2>/dev/null; then
       echo "" >> "$rc_file"
       echo "# PeerAgent CLI PATH" >> "$rc_file"
       echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"

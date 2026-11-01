@@ -470,10 +470,10 @@ def changes_markdown(c, title="改动清单"):
 def auth_state(cfg, agent):
     """返回 (类别, 说明)。类别：subscription / api / unknown。不显示邮箱和凭证。"""
     b = agent_bin(cfg, agent)
-    env = child_env()
+    env = os.environ
     if agent == "claude":
         if env.get("ANTHROPIC_API_KEY"):
-            return "api", "环境变量里有 ANTHROPIC_API_KEY（会按 API 计费）"
+            return "api", "环境变量里有 ANTHROPIC_API_KEY（子进程调用时将被忽略；请核对 Claude CLI 的实际登录方式）"
         code, out, err = run_quick([b, "auth", "status"])
         try:
             j = json.loads(out)
@@ -501,6 +501,8 @@ def auth_state(cfg, agent):
             return "subscription", first + hint
         if "api" in first.lower():
             return "api", first + hint
+        if hint:
+            hint += "；先运行 codex login --with-api-key，再运行 peer doctor --approve"
         return "unknown", (first or "无法读取 Codex 登录状态（退出码 %s）" % code) + hint
 
 
@@ -691,6 +693,7 @@ def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None):
             deny = ["Edit(~/**)", "Edit(./**)"] + ["Edit(/%s/**)" % d.rstrip("/") for d in add_dirs]
             settings = {"disableAllHooks": True,
                         "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                                    "failIfUnavailable": True,
                                     "network": {"allowedDomains": [], "strictAllowlist": True}},
                         "permissions": {"deny": deny}}
             args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Skill,Bash,WebSearch,WebFetch",

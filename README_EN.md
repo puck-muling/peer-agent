@@ -1,198 +1,238 @@
+<div align="center">
+
+[简体中文](README_CN.md) | **English**
+
 # PeerAgent 🤝
 
-> **Get a second model to review your code — without echo chambers or extra token bills.**  
-> *A lightweight, subscription-native peer review coordinator connecting developers' terminal AI agents.*
+**Let Claude Code and Codex review each other's code. Less copy-pasting, another independent opinion.**
+
+Ask another model to check your code from your current session and bring the findings back, without switching windows.
+
+Local official CLIs · Existing subscription logins supported · Read-only review tasks · No third-party Python packages for the core
+
+[Install and try it](#install-and-try-it) · [Usage examples](#usage-examples) · [Costs and permission boundaries](#costs-and-permission-boundaries) · [Troubleshooting and network FAQ](#troubleshooting-and-network-faq)
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Dependencies: 0 (Pure Stdlib)](https://img.shields.io/badge/dependencies-0%20(pure%20stdlib)-brightgreen.svg)](./bin/peer)
-[![Billing: Subscription Native](https://img.shields.io/badge/billing-subscription%20native-orange.svg)](./README_EN.md)
-[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/puck-muling/peer-agent)
 
-[中文文档 (README.md)](./README.md) | [Security Model (SECURITY.md)](./SECURITY.md) | [Architecture (architecture.md)](./docs/architecture.md) | [Contributing (CONTRIBUTING.md)](./CONTRIBUTING.md) | [Changelog (CHANGELOG.md)](./CHANGELOG.md)
+</div>
 
----
+## Demo video
 
-If you write code with programs like **Claude**, **Codex**, and **Antigravity**, you know these familiar frustrations:
-* One model writes a block of code, and you wonder: *"Did it introduce subtle edge cases or regression bugs?"*
-* You want a second model to double-check it, so you manually **copy code → switch terminals → paste prompt → bring conclusions back** across tedious rounds.
-* Existing multi-agent frameworks require custom commercial API keys with expensive token bills instead of reusing your active Pro/Team subscriptions.
+<a href="./docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent demo video cover, click to watch" width="100%" /></a>
 
-**With PeerAgent, you get an instant AI pairing partner directly inside your current terminal:**
+▶ [Watch the demo video](./docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
 
-### Cross-Examine Code with a Single Command
+For developers already using Claude Code or Codex who want a second review. You need **Python 3.10+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS / Linux. Native Windows and WSL do not yet have complete project validation records.
 
-Inside your active **Claude** session:
-```text
-❯ /codex review current git diff, focusing on concurrency and error boundaries
-```
+## Install and try it
 
-Seconds later, headless **Codex** returns an independent audit report directly in place (strictly read-only sandbox; zero workspace modifications):
-```markdown
-# Codex · Review (read-only)
+### Choose your calling path
 
-- Status: completed
-- Model: gpt-6.1-sol
-- Effort: high
-- Auth: subscription (Logged in using ChatGPT)
-- Provider: official
+| Calling path | What you need |
+| :--- | :--- |
+| `/codex` from Claude Code | A working Claude Code session and a locally installed, signed-in Codex CLI |
+| The `/claude` skill from Codex | A working Codex session and a locally installed, signed-in Claude Code CLI |
+| Either model from Antigravity | The Antigravity host and the signed-in official CLI for the target model |
+| Direct `peer ask` | Python 3.10+ and the signed-in official CLI for the target model |
 
-## Response
+PeerAgent does not install these CLIs or log in for you. Prepare the target CLI and confirm it works on its own before installing PeerAgent. A one-way workflow does not require activating an unused calling channel.
 
-[src/api.py:42] Potential Concurrency Race Condition:
-Multi-threaded write to cache file occurs without an exclusive lock, risking data corruption under high load.
-Recommendation: Use fcntl.flock to guard file writes or migrate to atomic file swaps.
-```
+### 30-second quickstart commands
 
-Similarly, type `/claude` inside **Codex** to have Claude independently audit Codex's implementation proposals.
+With prerequisites ready, this is the installation entry point. Downloads and the first run depend on your network and task size:
 
----
-
-## Why PeerAgent?
-
-| Dimension | Manual Transfer | Commercial API Frameworks (LangGraph, CrewAI) | PeerAgent |
-| :--- | :--- | :--- | :--- |
-| **Workflow** | Manually copy code, switch windows, paste prompt, bring findings back | Requires custom orchestration scripts or server daemons | **One slash command in current terminal; results return in place** |
-| **Billing Model** | Native subscriptions (manual effort) | Pay-per-token commercial API keys required | **Drives local official CLIs; uses existing subscriptions** |
-| **Dependencies** | None | Multiple heavy Python or Node packages | **Pure Python 3.10+ standard library; zero external dependencies** |
-| **Recursion Prevention**| Manual intervention | Turn-counter limits only | **OS-level `PEER_DEPTH` environment taint; physical cutoff (exit code 2)** |
-| **Safety Circuit Breaker** | None | Typically relies on unhandled exceptions | **Physical `STOP` lock files; blocks AI auto-recovery** |
-
----
-
-## Two Verifiable Commitments
-
-1. **Zero External Dependencies**: The core coordinator [`bin/peer`](./bin/peer) is a single Python script importing exclusively from the Python standard library. No `pip install` required.
-2. **Zero Accidental Token Bills**: Before dispatching calls, PeerAgent strictly verifies that the active CLI session matches the approved authentication mode (default: `subscription`). Any unapproved shift halts immediately (exit code 3), requiring human confirmation via `peer doctor --approve`.
-
----
-
-## Installation & Quickstart
-
-> [!TIP]
-> **Prerequisites**: Python 3.10+ (pure standard library; zero third-party pip dependencies). Ensure at least one of your daily tools (Claude, Codex, or Antigravity) is installed and signed in.
-
-### 0. Prepare Official CLIs (Install as needed)
-If you need to invoke a specific model, install the corresponding official CLI and log in:
-```bash
-# Claude official CLI
-npm install -g @anthropic-ai/claude-code
-claude login
-
-# OpenAI Codex official CLI
-npm install -g @openai/codex
-codex login
-```
-
-### 1. Quick Install
 ```bash
 git clone https://github.com/puck-muling/peer-agent.git
-cd peer-agent && ./install.sh
-```
-
-### 2. Verify Authentication
-```bash
+cd peer-agent
+./install.sh
 peer doctor
 ```
 
-### 3. Immediate Experience
-In your **Claude** terminal:
+The installer defaults to **file copies**. It copies `peer` to `~/.local/bin/peer` and `$PEER_HOME/bin/peer` (`PEER_HOME` defaults to `~/.peer-review`), copies templates and host skills, creates a default config if absent, and adds PATH configuration where supported by the shell. Developers can explicitly select symlinks with `./install.sh --link`. With copy installation, repository edits do not update installed copies automatically.
+
+If the current terminal cannot find `peer` yet, use the installed path:
+
+```bash
+"$HOME/.local/bin/peer" doctor
+```
+
+`peer doctor` reports CLI locations, login categories, and configuration. **Do not use `peer doctor --approve` as a generic repair command**: it writes currently recognized login categories into the approved config and may affect both channels. Check its output and billing mode first.
+
+### Run your first review
+
+Reopen or refresh the host client after installation and confirm the skill has loaded. In the project you want reviewed, enter this in **Claude Code**:
+
 ```text
-/codex review current git diff. Focus on error boundaries. Read-only review, do not modify files.
+/codex review the current git diff, focusing on error boundaries. Do not modify files.
 ```
 
----
+In **Codex**, invoke the `/claude` skill (the exact entry point depends on the client's skill menu):
 
-## Common Use Cases
+```text
+/claude review the current git diff for regressions. Do not modify files.
+```
 
-* **Pre-Commit Regression Audit** (in Claude):
-  ```text
-  /codex review current git diff, focusing on auth validation, concurrency, and edge cases
-  ```
-* **Post-Refactor Consumer Audit** (in Codex):
-  ```text
-  /claude check whether all callers have properly adapted to the updated module return type
-  ```
-* **Pre-Implementation Reality Check** (in Antigravity):
-  ```text
-  /codex verify whether line citations in the proposed plan match reality before implementation
-  ```
+This only illustrates a possible result format. **It is not an original report from a historical run**; the location is illustrative, and findings and latency depend on the task:
 
----
+```markdown
+## Review findings (illustration)
 
-## 📖 Usage Guide
+- Location: src/handler.py:42 (illustrative)
+- Issue: The failure branch does not close a resource, which may exhaust connections after repeated requests.
+- To verify: Check whether the caller owns cleanup and run tests covering the failure branch.
+```
 
-PeerAgent supports two flexible modes of interaction: **Native Slash Commands (Recommended for Daily Workflows)** and **Direct Terminal CLI Commands (CI / Automation / Scripts)**.
+Check the reported location and trigger before deciding to edit. A second model can miss issues or make incorrect judgments too.
 
-### Mode 1: Native Slash Command Integration (Recommended)
+## Usage examples
 
-After installation, zero persistent background services are required. Simply dispatch cross-reviews directly from your active developer interfaces:
+| Goal | Example |
+| :--- | :--- |
+| Ask Codex to check changes | `/codex review the current git diff for races and error boundaries. Do not modify files.` |
+| Ask Claude for a refactoring plan | `peer ask claude plan --request ./plan-task.md --cwd .` (prepare the task file first) |
+| Authorize a specific fix | `/codex exec Authorized: fix the confirmed resource cleanup issue, changing only that function.` |
+| Generate an image (Codex only) | `/codex image Authorized: draw a call flow diagram in the specified project asset directory.` |
+| Save a plan version and fingerprint | `peer freeze ./plan-v2.md --cwd .` |
+| Inspect the environment | `peer doctor` |
 
-| Client Interface | Command Example | Execution Provider | Common Scenario |
-| :--- | :--- | :--- | :--- |
-| **Claude Code** | `/codex review current git diff, focusing on concurrency` | Codex (headless) | Second-model code review to catch edge-case bugs |
-| **OpenAI Codex** | `/claude inspect refactored module for regression risk` | Claude (headless) | Independent architectural and design validation |
-| **Antigravity** | `/codex review current code` or `/claude draft proposal` | Codex / Claude | Act as coordinator orchestrating cross-agent reviews |
+### Review, planning, and execution
 
-> [!TIP]
-> **Intelligent Natural Language Intent Routing**:
-> PeerAgent automatically categorizes user requests into appropriate execution sandboxes:
-> - Keywords like `review`, `check`, `inspect`, `examine` → **Strictly Read-Only Sandbox (`review`)**
-> - Keywords like `plan`, `how-to`, `design`, `architecture` → **Proposal Draft Mode (`plan`)**
-> - Keywords like `why`, `analyze`, `advice`, `evaluate` → **Analysis & Recommendations (`advice`)**
-> - Keywords like `exec`, `modify`, `fix`, `implement` (requires explicit approval) → **Safe Editable Sandbox (`exec`)** with automated pre/post snapshot diffs
+Slash skills use keyword-based intent routing. It is a heuristic, not a complete understanding of natural language. The following order applies to **the `/codex` skill in Claude Code**:
 
----
+1. An explicit leading `exec` / `review` / `plan` / `advice` / `image` selects that type; `exec` is downgraded to `review` when a read-only or no-edit requirement is detected.
+2. Without an explicit type, recognized negative phrases and review verbs take precedence over edit verbs. For example, reviewing changes or checking a fix stays a review.
+3. The remaining checks match plan, image, edit, and advice phrases in that order, with `review` as the fallback. Phrase coverage varies by language; use an explicit type when possible.
 
-### Mode 2: Direct Terminal CLI Commands
+The `/claude` skill in Codex and the Antigravity skills use different classification rules; do not assume identical precedence across hosts. Check the corresponding skill and actual call type. To select a type deterministically, use direct `peer ask`, which bypasses slash-skill intent routing.
 
-Ideal for shell scripting, CI/CD pipelines, or automation workflows:
+`review`, `plan`, and `advice` use read-only execution settings. `exec` and `image` can write and require a user authorization quote. Specify allowed files clearly and check the submitted task type.
+
+### Call directly from a terminal
+
+Create `review-task.md` in the project with the files, original requirements, and response format. For example:
+
+```markdown
+# Task
+
+Review the current git diff, focusing on error handling. Do not modify files.
+
+## Response format
+
+List locations, triggers, evidence, and remaining checks. Say explicitly if no issues were found.
+```
+
+Then invoke the target CLI:
 
 ```bash
-# 1. Environment and authentication health check
-peer doctor
+peer ask codex review --request ./review-task.md --cwd .
+```
 
-# 2. Dispatch non-blocking background review
-peer ask codex review --request ./task.md --cwd .
+This starts a background run and returns a run ID. Replace `RUN_ID` below with that ID:
 
-# 3. Wait for completion and print formatted review report
-peer wait <run_id> --cwd .
-
-# 4. Inspect recent execution runs in workspace
-peer status --cwd .
-
-# 5. Display today's call counts, token usage, and latency
+```bash
+peer wait RUN_ID --cwd .
+peer status RUN_ID --cwd .
 peer stats
 ```
 
-<details>
-<summary><b>Click to expand: Complete CLI Command & Parameter Reference</b></summary>
+A `peer wait` timeout means the result has not arrived during that wait. Inspect or wait for the original run; do not submit another `ask`.
 
-| Command | Arguments | Description |
-| :--- | :--- | :--- |
-| `peer doctor` | `[--approve]` | Diagnose Python, CLIs, auth status, models, and circuit breaker locks; `--approve` confirms auth changes |
-| `peer ask <agent> <kind>` | `--request <file> --cwd <dir> [--model <m>] [--effort <e>]` | Launch background task (`kind`: `review` / `plan` / `advice` / `exec`) |
-| `peer wait <run_id>` | `--cwd <dir> [--timeout <sec>]` | Wait for completion and render formatted markdown report |
-| `peer status [run_id]` | `--cwd <dir>` | Display recent 10 runs or detailed metadata for a specific run ID |
-| `peer freeze <doc>` | `--cwd <dir> [--quote <str>]` | Lock plan with SHA-256 fingerprint, archive snapshot, and produce handoff note |
-| `peer verify <doc>` | None | Verify whether a frozen specification has been tampered with |
-| `peer since-freeze <doc>` | None | Diff code modifications committed after the plan freeze |
-| `peer stats` | None | Aggregate today's call frequency, token volume, and response durations |
+For a write task, prepare a separate task file and pass the user's actual approval:
+
+```bash
+peer ask codex exec --request ./fix-task.md --cwd . \
+  --quote 'Fix only the confirmed resource cleanup issue'
+```
+
+The program only checks that `--quote` is nonempty. It does not establish whether the quote authorizes every action. Pre-run snapshots live in `.peer-review/runs/<run_id>/snapshot/`; completion generates `changes.md` and `changes.diff`. Snapshot limits are described below.
+
+### Host two reviews in Antigravity
+
+Ask Claude and Codex to inspect the same source and requirements separately, then have the host summarize locations, evidence, and disagreements. Task instructions ask reviewers to check original evidence before accepting existing conclusions. **This is not OS-level blind-review isolation.** Request text is passed directly to the called model, so the host should keep the other reviewer's conclusions out of an independent review request.
+
+After a person confirms the plan, save a frozen copy:
+
+```bash
+peer freeze ./plan-v2.md --cwd .
+peer verify ./plan-v2_冻结v001.md
+peer since-freeze ./plan-v2_冻结v001.md
+```
+
+This assumes the first freeze of that document; use the filename printed by the command. `freeze` creates `*_冻结vNNN.md`, a content fingerprint, project snapshot, and handoff text. It runs in standalone mode by default. Optional `--review-receipt <dir>` validates an external final-review receipt; without one, freezing does not establish approval. SHA-256 detects content changes; it does not prevent edits or authorize implementation.
+
+<details>
+<summary>Complete command index</summary>
+
+| Command | Arguments and behavior |
+| :--- | :--- |
+| `peer doctor` | `[--approve]`: inspect the environment; explicitly approving records currently recognized login categories |
+| `peer ask <codex\|claude> <kind>` | `--request <file> --cwd <dir>`; `kind`: `review` / `plan` / `advice` / `exec` / `image`; `image` is Codex-only |
+| Optional call arguments | `--quote <text>`, `--model <model>`, `--effort <effort>`, `--service-tier <tier>`, `--add-dir <dir>`, `--caller <name>`, `--foreground`; write types require `--quote` |
+| `peer wait <run_id>` | `--cwd <dir> [--timeout <seconds>]`: wait for the original run and show the report |
+| `peer status [run_id]` | `--cwd <dir>`: inspect a run or the latest 10 runs |
+| `peer freeze <plan>` | `--cwd <dir> [--quote <text>] [--review-receipt <dir>]`: save a frozen copy and fingerprint |
+| `peer verify <frozen>` | Compare the frozen copy with its recorded SHA-256 |
+| `peer since-freeze <frozen>` | Compare the project with its freeze snapshot and generate change records |
+| `peer stats` | Show daily calls and available usage data, not an official billing statement |
 
 </details>
 
----
+## Costs and permission boundaries
 
-## ⚙️ Configuration Reference
+| Mechanism | What it does | Limits |
+| :--- | :--- | :--- |
+| Login-category check | Compares the current category with `approved_auth`; mismatch stops the call with exit code 3 | Does not verify authorization scope, remaining credit, or final charges. Subscription calls consume quota; API logins follow their billing rules |
+| Read-only tasks | Sets Codex's `read-only` sandbox; restricts Claude tools and Bash sandbox permissions; requests read-only behavior in the prompt | Depends on the target CLI and system sandbox. PeerAgent still writes task files and logs; the machine is not entirely write-free |
+| Write authorization | Requires a nonempty quote for `exec` / `image` and uses write settings | A quote does not mean the program understands its scope; people and the executor must check it |
+| Pre-run snapshot | Copies eligible text content, records file information, and compares afterward | Skips some directories and suspected secrets; size, binary, and total-copy limits apply. Not a full backup or automatic rollback |
+| Recursion marker | Inherited `PEER_DEPTH` causes nested `peer ask` calls to exit with code 2 | Covers this entry point with its marker intact, not every possible agent loop |
+| STOP files | Blocks later calls on a channel after detecting certain ban or region errors | Depends on error matching and cannot guarantee account protection. Investigate manually; agents should not remove STOP files automatically |
+| Independent-review instructions | Ask reviewers to inspect source, requirements, and diffs before judging claims | Do not guarantee correctness, independence, or consensus |
 
-PeerAgent is designed with a **"zero-config, works out-of-the-box"** philosophy (automatically inheriting active CLI client settings). To customize model selection, reasoning intensity, or network proxies, edit the configuration file.
+Snapshots skip directories such as `.git`, `node_modules`, and `.peer-review`. Text files over 2 MiB are not copied; files over 64 MiB only have size and modification time recorded. Total copied content is capped at 300 MiB and file count at 40,000. See [`bin/peer`](./bin/peer) for details and [SECURITY.md](./SECURITY.md) for the security model.
 
-### Configuration File Locations
-- **Default Path**: `~/.peer-review/config.json` (auto-generated by `./install.sh`)
-- **Custom Path**: Override via the `PEER_CONFIG` environment variable.
+## Troubleshooting and network FAQ
 
-### Complete Annotated Schema (`config.json`)
+### `peer` or a target CLI cannot be found
+
+Reopen the terminal to load PATH changes or use the fixed `~/.local/bin/peer` path above. If a target command is missing, confirm its CLI is installed and visible in the environment that starts the host. Set `bins.claude` / `bins.codex` to its actual absolute executable path if needed. Restart the host after changing PATH or configuration.
+
+### Not signed in, or login category mismatch
+
+Check the original channel's official CLI login status. If needed, log in using that CLI's flow, then run `peer doctor`. If you intentionally changed login mode, confirm subscription/API billing expectations before personally deciding to run `peer doctor --approve`. It records recognized categories; it does not repair networking, quota, or account permissions.
+
+### `/codex` or `/claude` is missing after installation
+
+Refresh or reopen the host and check that the skill is in the configuration directory that client actually uses. The installer copies skills to the default Claude, Codex, and Antigravity directories; custom config directories need to be checked against client settings. Menu behavior depends on client version. Direct `peer ask` can help isolate the calling path.
+
+### In mainland China or another restricted network, the proxy port connects but requests fail
+
+`proxy_check` **only attempts a TCP connection to the configured host and port**. It does not configure a proxy or validate HTTP/SOCKS behavior, authentication, DNS, TLS, or model-service reachability. Set your actual local port if you want this check:
+
+```json
+{
+  "proxy_check": ["127.0.0.1", 7890]
+}
+```
+
+This only makes `peer doctor` probe the port. Configure proxy addresses, protocols, and environment variables separately in the environment running the official CLI. Child processes inherit that environment, but support depends on the target CLI. Check the official CLI's network state in the same terminal, then verify the host inherits the same environment. A desktop-launched client may not inherit terminal proxy variables.
+
+Package downloads and model-service requests are separate paths. Successful installation does not prove model-service access. For proxy timeouts, check the port, protocol, and target service first. No unverified mirrors or service-restriction workarounds are provided here.
+
+### A task timed out or has `unknown` status
+
+Use the original run ID with `peer status`, then inspect that run's status, report, and error files. A wait timeout can be followed by another `peer wait`. `unknown` means the process ended without a collected result, not that the request was never submitted. Do not resubmit or switch accounts while the outcome is unclear. Check the original task and account; only send a new request after confirming non-acceptance and obtaining retry authorization. PeerAgent does not retry automatically.
+
+### A model or effort setting is unsupported
+
+Models are blank by default and follow client settings; the config fixes Codex effort to `high` by default. Confirm target CLI support before specifying a model or effort. Precedence: call arguments > fixed config > client settings > CLI defaults. A parameter accepted by PeerAgent is not necessarily supported by the target service.
+
+## Configuration reference
+
+Default config: `~/.peer-review/config.json`. Use `PEER_CONFIG` for another path. These defaults match [`config.example.json`](./config.example.json):
+
 ```json
 {
   "bins": {
@@ -228,109 +268,84 @@ PeerAgent is designed with a **"zero-config, works out-of-the-box"** philosophy 
 }
 ```
 
-### Parameter Explanations
+| Setting | Meaning |
+| :--- | :--- |
+| `bins` | Target CLI command name or absolute executable path |
+| `models` | Fixed model; empty means try to follow client settings rather than hard-coding a model name |
+| `efforts` | Fixed reasoning effort; empty means try to follow the client. Supported values depend on the target CLI |
+| `service_tiers.codex` | This coordinator currently accepts only `default` or `flex`; default is `default` |
+| `follow_app_settings` | Read client settings when the corresponding fixed value is empty |
+| `approved_auth` | Approved login categories, both `subscription` by default; mismatches block calls |
+| `max_turns` | Currently passed to the Claude CLI, not a universal loop limit for both agents |
+| `timeout_minutes` | Maximum read/write task duration in minutes before terminating the child; does not establish that a remote request was not processed |
+| `proxy_check` | Optional `[host, port]` TCP check; does not configure a proxy |
+| `codex_disable_apps` | Pass a setting to disable Codex Apps; default `false`, separately disabled for image tasks |
 
-| Key | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `bins` | `object` | `{"claude":"claude", "codex":"codex"}` | Custom CLI binary names or absolute paths (e.g. `/usr/local/bin/claude`). |
-| `models` | `object` | `{"claude":"", "codex":""}` | Pinned model names. Leave empty `""` to inherit client defaults, or specify explicitly (e.g. `"claude-3-5-sonnet-20241022"`, `"gpt-4o"`). |
-| `efforts` | `object` | `{"claude":"", "codex":"high"}` | Reasoning effort level: `low`, `medium`, `high`, `xhigh`. |
-| `service_tiers` | `object` | `{"codex":"default"}` | Codex client service tier (typically `"default"` or `"priority"`). |
-| `follow_app_settings`| `boolean` | `true` | When `models` or `efforts` are empty, automatically inspects and inherits active client settings. |
-| `approved_auth` | `object` | `{"claude":"subscription", "codex":"subscription"}` | **Zero-Bill Safety Lock**: Approved login method. Any unapproved shift immediately halts calls (exit code 3); approve via `peer doctor --approve`. |
-| `max_turns` | `object` | `{"read": 20, "write": 120}` | Physical turn caps to prevent runaway execution loops. |
-| `timeout_minutes` | `object` | `{"read": 30, "write": 60}` | Hard execution timeout in minutes. Terminated child processes are safely cleaned up. |
-| `proxy_check` | `array\|null`| `null` | Local proxy socket health check (e.g. `["127.0.0.1", 7890]`) validated during `peer doctor`. |
-| `codex_disable_apps` | `boolean` | `false` | Disable external Codex app plugins for minimal, distraction-free code auditing. |
+To fix effort at high while retaining model inheritance, merge this fragment:
 
----
-
-### 3 Practical Configuration Recipes
-
-#### Recipe 1: Fixed High-Reasoning Flagship Models
-Lock background reviews to flagship models and high reasoning effort regardless of interactive terminal state:
 ```json
 {
-  "models": {
-    "claude": "claude-3-5-sonnet-20241022",
-    "codex": "gpt-6.1-sol"
-  },
-  "efforts": {
-    "claude": "high",
-    "codex": "high"
-  }
+  "efforts": {"claude": "high", "codex": "high"}
 }
 ```
 
-#### Recipe 2: Local HTTP/SOCKS Proxy Verification
-Validate that your local development proxy is healthy during `peer doctor`:
-```json
-{
-  "proxy_check": ["127.0.0.1", 15236]
-}
-```
+If intentionally switching to an official API login, complete and confirm it in that CLI, inspect `peer doctor`, and then decide whether to approve the new category. Do not approve merely to dismiss an error.
 
-#### Recipe 3: Switch to Official API Key Mode
-If utilizing standard API keys instead of interactive subscriptions, update approved auth via CLI:
-```bash
-# After signing in with API mode in your CLI:
-peer doctor --approve
-```
+### Environment variables
 
----
+| Variable | Default and purpose |
+| :--- | :--- |
+| `PEER_HOME` | `~/.peer-review`; configuration, templates, and global call logs |
+| `PEER_CONFIG` | `$PEER_HOME/config.json`; explicit config path |
+| `PEER_TEMPLATES_DIR` | Override templates; otherwise prefer `templates/` beside the program's repository, then `$PEER_HOME/templates` |
+| `PEER_DEPTH` | Defaults to 0; the coordinator marks child depth to reject nested calls |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | Inherited from the launch environment; target CLI support determines behavior. PeerAgent does not set them automatically |
 
-## 🌐 Environment Variables
+## What's inside and how it works
 
-PeerAgent adheres to POSIX conventions and supports runtime customization via environment variables:
+| Component | Path and description |
+| :--- | :--- |
+| Core coordinator | [`bin/peer`](./bin/peer), currently 2,028 lines, Python standard library only, no persistent daemon |
+| CLI adaptation skills | [`skills/`](./skills/), for Claude Code, Codex, and Antigravity; not official vendor products |
+| Task templates | [`templates/`](./templates/), 5 files: `review.md`, `plan.md`, `advice.md`, `exec.md`, `image.md` |
+| Installer | [`install.sh`](./install.sh), file copies by default; symlinks are opt-in |
+| Tests | [`tests/`](./tests/), test cases for core behavior |
+| Architecture | [`docs/architecture.md`](./docs/architecture.md), design details and diagrams |
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `PEER_HOME` | `~/.peer-review` | Base directory containing configurations, templates, and call audit logs. |
-| `PEER_CONFIG` | `$PEER_HOME/config.json` | Explicit path to custom `config.json`. |
-| `PEER_TEMPLATES_DIR` | `$PEER_HOME/templates` | Directory storing markdown prompt templates (`review.md`, `plan.md`, etc.). |
-| `PEER_DEPTH` | `0` | **Anti-Recursion Taint**: Automatically injected when spawning child processes. Halts nested calls (exit code 2). |
-| `HTTP_PROXY` / `HTTPS_PROXY` | System Default | Subprocesses automatically inherit active shell proxy environment variables. |
-
----
-
-## Architecture & Internals
+Flow: save the task → check login category, STOP files, and call depth → launch the local CLI → collect results and return a report. Claude Code, Codex, and Antigravity can initiate calls; local Claude / Codex CLIs execute them.
 
 <details>
-<summary><b>Click to expand: Invocation Topology, Lifecycle & Protocol Specs</b></summary>
+<summary>Architecture diagrams and existing demo assets</summary>
 
 ![Topology](./docs/diagrams/topology.svg)
 
-* **Three Consumers, Two Providers**: Antigravity, Claude, and Codex all initiate tasks. Headless Claude and Codex act as execution providers. Single-file `peer` coordinates via the workspace file protocol without persistent daemons.
+![Review sequence](./docs/diagrams/review_sequence.svg)
 
-![Review Lifecycle](./docs/diagrams/review_sequence.svg)
+![Evidence checking](./docs/diagrams/evidence_first_protocol.svg)
 
-* **Review Lifecycle & Anti-Recursion**: Tasks land on disk and pass through STOP locks and PEER_DEPTH gates. Background `_run` captures Stdio and formats markdown reports. Nested child calls are halted at the process boundary (exit code 2).
+This existing demo cover contains robot image generation and a redrawn interface; **it is not a recording of code review**. Historical promotional wording in the image is not a capability guarantee. Refer to this page and the source for current behavior and limits.
 
-![Evidence-First Protocol](./docs/diagrams/evidence_first_protocol.svg)
+<img src="./docs/assets/hero.jpg" alt="Existing demo cover with a redrawn interface and image generation" width="100%" />
 
-* **Evidence-First Protocol**: Ground-truth code lines and actual git diffs are placed before hypotheses. Reviewers independently check evidence, report facts, and provide an independence disclosure for human verification.
-
-Read full technical details in [Architecture Guide (docs/architecture.md)](./docs/architecture.md).
 </details>
 
----
+## Why we built it
 
-## Community & Connect
+After writing code, we often want another model to check it. Copying code, switching windows, and moving feedback back is tedious. PeerAgent connects that step to the existing session using local signed-in CLIs.
 
-Follow the author on X (Twitter) or join our Telegram group to discuss multi-agent workflows:
+Try it if you want an extra code check between existing CLIs. For complex orchestration, choose tools based on your specific needs. Another model does not make a finding correct; you still decide what to accept.
+
+## Community
+
+Report issues on [GitHub Issues](https://github.com/puck-muling/peer-agent/issues), or add QQ: 2607430010 (Puck-Muling). Also find us on [X (@puck_muling)](https://x.com/puck_muling) and [Telegram (@puckmuling)](https://t.me/puckmuling).
 
 <p align="center">
-  <a href="https://x.com/puck_muling"><b>Twitter (@puck_muling)</b></a> &nbsp;·&nbsp; 
-  <a href="https://t.me/puckmuling"><b>Telegram (@puckmuling)</b></a>
+  <img src="./docs/assets/qq_qr.jpg" height="220" alt="QQ contact QR code" />
+  <img src="./docs/assets/telegram_qr.png" height="220" alt="Telegram QR code" />
 </p>
 
-<p align="center">
-  <img src="./docs/assets/telegram_qr.png" width="140" alt="Telegram QR Code" />
-</p>
+Thanks to the Claude Code, Codex, and Antigravity teams and open-source contributors sharing agent-review practices.
 
----
+## License and security
 
-## License & Security
-
-Distributed under the [MIT License](./LICENSE).  
-For security disclosures and sandbox policies, see [SECURITY.md](./SECURITY.md).
+Released under the [MIT License](./LICENSE). See [SECURITY.md](./SECURITY.md) for security details and reporting guidelines.
