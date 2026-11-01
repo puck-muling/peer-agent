@@ -9,7 +9,7 @@ Thank you for your interest in contributing to **PeerAgent**! We welcome contrib
 Before opening a pull request, please keep our core architectural tenets in mind:
 
 1. **Zero External Runtime Dependencies**:  
-   The core `peer` CLI is intentionally designed to run on the **pure Python 3.10+ standard library**. Do not introduce external `pip` packages (like `requests`, `pydantic`, `typer`, etc.) into the runtime core.
+   The core `peer` CLI is intentionally designed to run on the **pure Python 3.9+ standard library**. Do not introduce external `pip` packages (like `requests`, `pydantic`, `typer`, etc.) into the runtime core.
 2. **Defensive Safety by Default**:  
    Review and analysis tasks must remain strictly read-only (`--sandbox read-only` on Codex, write tools stripped on Claude). Write actions must remain gated behind explicit human quotes and snapshot diffs.
 3. **Anti-Recursion Taint Tracking**:  
@@ -22,7 +22,7 @@ Before opening a pull request, please keep our core architectural tenets in mind
 ## 🛠️ Local Development & Testing
 
 ### Prerequisites
-- Python 3.10 or higher.
+- Python 3.9 or higher.
 - Official `claude` and/or `codex` CLIs installed if testing live cross-model invocations.
 
 ### Running Tests

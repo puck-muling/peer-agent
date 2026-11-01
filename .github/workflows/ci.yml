@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout repository
@@ -39,6 +39,27 @@ jobs:
         run: |
           ./bin/peer --help
           ./bin/peer stats
+
+      - name: Installer smoke test (clean HOME)
+        run: |
+          export HOME="$(mktemp -d)"
+          # 干净环境没有官方 CLI，peer doctor 预期返回 2；其他非零退出码视为失败
+          rc=0
+          bash install.sh --copy || rc=$?
+          if [ "$rc" != "0" ] && [ "$rc" != "2" ]; then
+            echo "install.sh exited with unexpected code $rc"; exit 1
+          fi
+          for f in .local/bin/peer .peer-review/bin/peer .peer-review/config.json \
+                   .claude/skills/codex/SKILL.md .gemini/config/skills/codex/SKILL.md \
+                   .gemini/config/skills/claude/SKILL.md .codex/skills/claude/SKILL.md \
+                   .agents/skills/claude/SKILL.md; do
+            test -f "$HOME/$f" || { echo "missing $HOME/$f"; exit 1; }
+          done
+          "$HOME/.local/bin/peer" --help >/dev/null
+          bash install.sh --uninstall
+          for f in .local/bin/peer .codex/skills/claude/SKILL.md .agents/skills/claude/SKILL.md; do
+            test ! -e "$HOME/$f" || { echo "not removed $HOME/$f"; exit 1; }
+          done
 
       - name: Package build validation
         run: |

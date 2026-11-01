@@ -14,7 +14,7 @@ Local official CLIs · Existing subscriptions supported · Read-only reviews · 
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 </div>
 
@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 > [!NOTE]
 > **Notice on Same-Named Projects**: This project (`puck-muling/peer-agent`) is a lightweight **multi-agent safety governance & peer-review middleware** for real-world software engineering (running via local official CLIs, zero third-party pip dependencies, hardened billing gates and circuit breakers). It is completely distinct in architecture and use-case from `hirak99/peer-agent` (an HTTP/FastAPI-based companion agent framework).
 
-For developers already using Claude Code or Codex who want a second review. You need **Python 3.10+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Supported on macOS and Linux; native Windows provides graceful file-lock degradation.
+For developers already using Claude Code or Codex who want a second review. You need **Python 3.9+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS and Linux; on Windows, install and run PeerAgent inside WSL2 (native Windows only gets graceful degradation for file locks and process termination, and `install.sh` does not support it).
 
 ## Ecosystem positioning & comparison: Not just a bridge, but a safety governance layer
 
@@ -63,7 +63,7 @@ PeerAgent's moat lies in **encapsulating model interactions within a hardened de
 | `/codex` from Claude Code | A working Claude Code session and a locally installed, signed-in Codex CLI |
 | The `/claude` skill from Codex | A working Codex session and a locally installed, signed-in Claude Code CLI |
 | Either model from Antigravity | The Antigravity host and the signed-in official CLI for the target model |
-| Direct `peer ask` | Python 3.10+ and the signed-in official CLI for the target model |
+| Direct `peer ask` | Python 3.9+ and the signed-in official CLI for the target model |
 
 PeerAgent does not install these CLIs or log in for you. Prepare the target CLI and confirm it works on its own before installing PeerAgent. A one-way workflow does not require activating an unused calling channel.
 
@@ -79,6 +79,9 @@ peer doctor
 ```
 
 The installer defaults to **file copies**. It copies `peer` to `~/.local/bin/peer` and `$PEER_HOME/bin/peer` (`PEER_HOME` defaults to `~/.peer-review`), copies templates and host skills, creates a default config if absent, and adds PATH configuration where supported by the shell. Developers can explicitly select symlinks with `./install.sh --link`. With copy installation, repository edits do not update installed copies automatically.
+
+> [!IMPORTANT]
+> `pip install` only installs the `peer` command itself and **does not register the host agent skills** (`/codex`, `/claude`). Run `./install.sh` from the repository afterwards to install the skills for Claude, Codex (`~/.codex/skills` and `~/.agents/skills`) and Antigravity.
 
 If the current terminal cannot find `peer` yet, use the installed path:
 

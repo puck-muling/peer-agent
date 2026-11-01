@@ -14,7 +14,7 @@
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 </div>
 
@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 > [!NOTE]
 > **同名项目说明**：本项目（`puck-muling/peer-agent`）是面向代码工程实战的**多智能体安全治理与对等审查中间件**（基于本地官方 CLI、零第三方 pip 依赖、内置计费门禁与封号熔断）；不同于 `hirak99/peer-agent`（基于 HTTP/FastAPI 的伴生 Agent 框架），二者架构与应用场景完全不同。
 
-适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.10+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 原生提供文件锁优雅降级支持。
+适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.9+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 用户请在 WSL2 中安装和使用（原生 Windows 仅做了文件锁与进程终止的降级兼容，`install.sh` 不支持原生 Windows）。
 
 ## 生态定位与同类对比：不仅是调用通道，更是安全治理层
 
@@ -63,7 +63,7 @@ PeerAgent 的核心护城河是**将调用能力深嵌在一套坚固的防御�
 | 在 Claude Code 会话中输入 `/codex` | 可用的 Claude Code 会话，以及本机已安装、已登录的 Codex CLI |
 | 在 Codex 会话中调用 `/claude` 技能 | 可用的 Codex 会话，以及本机已安装、已登录的 Claude Code CLI |
 | 在 Antigravity 中调用任一模型 | Antigravity 主持环境，以及被调用模型对应的官方 CLI 和登录状态 |
-| 直接用 `peer ask` 调用 | Python 3.10+，以及被调用模型对应的官方 CLI 和登录状态 |
+| 直接用 `peer ask` 调用 | Python 3.9+，以及被调用模型对应的官方 CLI 和登录状态 |
 
 PeerAgent 不替你安装或登录这些 CLI。按需准备后，先确认目标 CLI 能单独运行，再安装 PeerAgent；无需为了单向调用而开通另一条不用的调用渠道。
 
@@ -79,6 +79,9 @@ peer doctor
 ```
 
 安装默认采用**文件复制**：将 `peer` 复制到 `~/.local/bin/peer` 和 `$PEER_HOME/bin/peer`（`PEER_HOME` 默认是 `~/.peer-review`），并复制模板与各端技能；配置不存在时生成默认配置，还会按 Shell 情况补充 PATH。开发时可显式选择 `./install.sh --link` 使用软链接。复制安装后，修改仓库不会自动更新已安装副本。
+
+> [!IMPORTANT]
+> 若通过 `pip install` 安装，只会装上 `peer` 命令本身，**不会注册各端 Agent 技能**（`/codex`、`/claude`）。请在仓库目录中再运行一次 `./install.sh`，把技能安装到 Claude、Codex（`~/.codex/skills` 与 `~/.agents/skills`）和 Antigravity 的技能目录。
 
 如果当前终端还找不到 `peer`，可先用固定路径检查：
 

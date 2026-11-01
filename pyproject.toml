@@ -7,7 +7,7 @@ name = "peer-agent"
 version = "0.1.1"
 description = "让 Claude 与 Codex 帮彼此审代码 —— 订阅原生的对等多智能体交叉审阅 CLI (Connecting Claude, Codex, and Antigravity)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
     { name = "PeerAgent Contributors" }
@@ -28,6 +28,7 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

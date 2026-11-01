@@ -5,13 +5,14 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -285,7 +286,7 @@ class TestPeerExtended(unittest.TestCase):
         # --version
         res_ver = subprocess.run([sys.executable, bin_path, "--version"], capture_output=True, text=True)
         self.assertEqual(res_ver.returncode, 0)
-        self.assertIn("peer 0.1.0", res_ver.stdout)
+        self.assertIn("peer 0.1.1", res_ver.stdout)
 
         # stats
         res_stats = subprocess.run([sys.executable, bin_path, "stats"], capture_output=True, text=True)
@@ -544,9 +545,249 @@ class TestPeerExtended(unittest.TestCase):
                 data = json.loads(f.readline())
             self.assertEqual(data.get("test"), 123)
 
-            # 测试 ImageGlobalLock 在无 fcntl 时优雅降级不报错
-            with peer.ImageGlobalLock("run_mock_win"):
-                self.assertTrue(True)
+            # 测试 ImageGlobalLock 在无 fcntl 时优雅降级不报错（锁文件指向临时目录，不依赖真实 ~/.peer-review）
+            lock_dir = os.path.join(self.test_dir, "fresh-home", ".peer-review")
+            with patch.object(peer, "IMAGE_LOCK_PATH", os.path.join(lock_dir, "image.lock")), \
+                 patch.object(peer, "IMAGE_COOLDOWN_PATH", os.path.join(lock_dir, "last_image_time.json")):
+                with peer.ImageGlobalLock("run_mock_win"):
+                    self.assertTrue(True)
+
+
+class TestHardeningFixes(unittest.TestCase):
+    """覆盖本轮加固：计费 key 隔离、认证探测、生图锁目录、安装器路径/退出码/软链接备份/提示。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = tmp.name
+
+    # ---------------------------------------------------------- bin/peer
+    def test_child_env_strips_billing_api_keys(self):
+        base = {"PATH": "/bin", "OPENAI_API_KEY": "k1", "CODEX_API_KEY": "k2",
+                "ANTHROPIC_API_KEY": "k3", "OPENAI_BASE_URL": "https://example.invalid"}
+        env = peer.child_env(base)
+        for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertEqual(env["OPENAI_BASE_URL"], "https://example.invalid")
+
+    def test_codex_auth_requires_zero_exit_code(self):
+        for status in ("Logged in using ChatGPT", "Logged in using an API key"):
+            with self.subTest(status=status), patch.dict(os.environ, {}, clear=True):
+                with patch.object(peer, "run_quick", return_value=(1, "", status)):
+                    cat, _ = peer.auth_state(peer.DEFAULT_CONFIG, "codex")
+                self.assertEqual(cat, "unknown")
+
+    def test_codex_auth_rejects_negative_or_partial_phrases(self):
+        for status in ("Not logged in to ChatGPT", "Error: login with ChatGPT failed",
+                       "Not logged in. Run codex login --with-api-key", "chatgpt api",
+                       "You are not Logged in using ChatGPT"):
+            with self.subTest(status=status), patch.dict(os.environ, {}, clear=True):
+                with patch.object(peer, "run_quick", return_value=(0, status, "")):
+                    cat, _ = peer.auth_state(peer.DEFAULT_CONFIG, "codex")
+                self.assertEqual(cat, "unknown")
+
+    def test_codex_auth_accepts_full_phrase_with_suffix(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(peer, "run_quick", return_value=(0, "Logged in using an API key - sk-***\n", "")):
+            cat, _ = peer.auth_state(peer.DEFAULT_CONFIG, "codex")
+        self.assertEqual(cat, "api")
+
+    def test_claude_auth_requires_zero_exit_and_json_object(self):
+        ok_json = '{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "pro"}'
+        for code, out in [(1, ok_json), (0, "[1, 2]"), (0, "not json"),
+                          (0, '{"loggedIn": "yes", "authMethod": "claude.ai"}')]:
+            with self.subTest(code=code, out=out), patch.dict(os.environ, {}, clear=True):
+                with patch.object(peer, "run_quick", return_value=(code, out, "")):
+                    cat, _ = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
+                self.assertEqual(cat, "unknown")
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(peer, "run_quick", return_value=(0, ok_json, "")):
+            self.assertEqual(peer.auth_state(peer.DEFAULT_CONFIG, "claude")[0], "subscription")
+
+    def test_image_lock_creates_missing_parent_dir(self):
+        lock_dir = os.path.join(self.test_dir, "not", "yet", "created")
+        with patch.object(peer, "IMAGE_LOCK_PATH", os.path.join(lock_dir, "image.lock")), \
+             patch.object(peer, "IMAGE_COOLDOWN_PATH", os.path.join(lock_dir, "last_image_time.json")):
+            with peer.ImageGlobalLock("run_mock_dir"):
+                self.assertTrue(os.path.exists(os.path.join(lock_dir, "image.lock")))
+
+    def test_terminate_child_uses_process_group_on_posix(self):
+        child = Mock(pid=4321)
+        with patch.object(peer.os, "killpg", create=True) as killpg, \
+             patch.object(peer.os, "getpgid", create=True, return_value=4321), \
+             patch.object(peer.time, "sleep"):
+            peer.terminate_child(child, 5)
+        sigkill = getattr(peer.signal, "SIGKILL", peer.signal.SIGTERM)
+        self.assertEqual([c.args for c in killpg.call_args_list],
+                         [(4321, peer.signal.SIGTERM), (4321, sigkill)])
+        child.terminate.assert_not_called()
+
+    def test_terminate_child_falls_back_without_killpg(self):
+        """模拟 Windows 原生：os 模块没有 killpg / getpgid 时改用 terminate / kill，不抛 AttributeError。"""
+        for exited in (True, False):
+            with self.subTest(exited=exited):
+                child = Mock(pid=4321)
+                if not exited:
+                    child.wait.side_effect = subprocess.TimeoutExpired("x", 5)
+                with patch.object(peer, "os") as fake_os:
+                    del fake_os.killpg
+                    del fake_os.getpgid
+                    peer.terminate_child(child, 5)
+                child.terminate.assert_called_once_with()
+                child.wait.assert_called_once_with(timeout=5)
+                if exited:
+                    child.kill.assert_not_called()
+                else:
+                    child.kill.assert_called_once_with()
+
+    def test_terminate_child_really_stops_a_process(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 start_new_session=True)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        peer.terminate_child(child, 0.2)
+        self.assertIsNotNone(child.wait(timeout=10))
+
+    # ---------------------------------------------------------- install.sh
+    def make_repo(self, doctor_rc=0):
+        """在临时目录复制一份安装所需文件，并把 bin/peer 换成按指定退出码返回的 doctor 桩。"""
+        repo = os.path.join(self.test_dir, "repo")
+        os.makedirs(os.path.join(repo, "bin"))
+        for name in ("install.sh", "config.example.json"):
+            shutil.copy2(os.path.join(REPO_DIR, name), os.path.join(repo, name))
+        for name in ("templates", "skills"):
+            shutil.copytree(os.path.join(REPO_DIR, name), os.path.join(repo, name))
+        stub = os.path.join(repo, "bin", "peer")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho doctor-stub\nexit %d\n" % doctor_rc)
+        os.chmod(stub, 0o755)
+        return repo
+
+    def run_installer(self, repo, *args, peer_home=None):
+        home = os.path.join(self.test_dir, "home")
+        os.makedirs(home, exist_ok=True)
+        tool_bin = os.path.join(self.test_dir, "toolbin")
+        os.makedirs(tool_bin, exist_ok=True)
+        py = os.path.join(tool_bin, "python3")
+        if not os.path.exists(py):
+            os.symlink(sys.executable, py)
+        env = {"HOME": home, "SHELL": "/bin/bash", "PATH": tool_bin + ":/usr/bin:/bin",
+               "PEER_HOME": peer_home or os.path.join(home, ".peer-review")}
+        res = subprocess.run(["bash", os.path.join(repo, "install.sh")] + list(args),
+                             env=env, capture_output=True, text=True, cwd=repo)
+        return res, home
+
+    def test_installer_refuses_peer_home_equal_to_repo(self):
+        for mode in ("--copy", "--link", "--uninstall"):
+            with self.subTest(mode=mode):
+                repo = self.make_repo()
+                src = os.path.join(repo, "bin", "peer")
+                with open(src, encoding="utf-8") as f:
+                    before = f.read()
+                res, _ = self.run_installer(repo, mode, peer_home=repo)
+                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+                self.assertIn("已安全终止", res.stderr)
+                self.assertFalse(os.path.islink(src))
+                with open(src, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), before)
+                for t in os.listdir(os.path.join(repo, "templates")):
+                    self.assertFalse(os.path.islink(os.path.join(repo, "templates", t)))
+                shutil.rmtree(repo)
+
+    def test_installer_refuses_peer_home_symlinked_to_repo(self):
+        repo = self.make_repo()
+        alias = os.path.join(self.test_dir, "alias")
+        os.symlink(repo, alias)
+        res, _ = self.run_installer(repo, "--copy", peer_home=alias)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(repo, "bin", "peer")))
+
+    def test_installer_propagates_doctor_exit_code(self):
+        for rc in (0, 2, 3):
+            with self.subTest(rc=rc):
+                repo = self.make_repo(doctor_rc=rc)
+                res, home = self.run_installer(repo)
+                self.assertEqual(res.returncode, rc, res.stdout + res.stderr)
+                self.assertIn("doctor-stub", res.stdout)
+                if rc == 3:
+                    self.assertIn("熔断停机锁", res.stdout)
+                elif rc:
+                    self.assertIn("退出码 %d" % rc, res.stdout)
+                shutil.rmtree(repo)
+                shutil.rmtree(home)
+
+    def test_installer_claude_hint_prefers_native_install(self):
+        repo = self.make_repo()
+        res, _ = self.run_installer(repo)
+        out = res.stdout
+        native = "curl -fsSL https://claude.ai/install.sh | bash"
+        self.assertIn(native, out)
+        self.assertIn("brew install --cask claude-code", out)
+        # 每一处 npm 备选都必须排在原生安装命令之后
+        npm = "npm install -g @anthropic-ai/claude-code"
+        pos = 0
+        while True:
+            idx = out.find(npm, pos)
+            if idx < 0:
+                break
+            self.assertGreater(idx, out.rfind(native, 0, idx), "npm 不能先于原生安装出现")
+            self.assertGreaterEqual(out.rfind(native, 0, idx), 0)
+            pos = idx + 1
+
+    def test_installer_backs_up_foreign_skill_symlink_and_restores_it(self):
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        foreign = os.path.join(self.test_dir, "my-own-skill.md")
+        with open(foreign, "w", encoding="utf-8") as f:
+            f.write("user skill\n")
+        dst = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+        os.makedirs(os.path.dirname(dst))
+        os.symlink(foreign, dst)
+
+        res, _ = self.run_installer(repo)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("原指向: %s" % foreign, res.stdout)
+        baks = [n for n in os.listdir(os.path.dirname(dst)) if n.startswith("SKILL.md.bak_")]
+        self.assertEqual(len(baks), 1)
+        bak = os.path.join(os.path.dirname(dst), baks[0])
+        self.assertTrue(os.path.islink(bak))
+        self.assertEqual(os.readlink(bak), foreign)
+        self.assertFalse(os.path.islink(dst))
+
+        res, _ = self.run_installer(repo, "--uninstall")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertTrue(os.path.islink(dst))
+        self.assertEqual(os.readlink(dst), foreign)
+        with open(foreign, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "user skill\n")
+
+    def test_installer_link_reinstall_does_not_back_up_own_link(self):
+        repo = self.make_repo()
+        for _ in range(2):
+            res, home = self.run_installer(repo, "--link")
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        skill_dir = os.path.join(home, ".claude", "skills", "codex")
+        self.assertEqual([n for n in os.listdir(skill_dir) if ".bak_" in n], [])
+        self.assertEqual(os.readlink(os.path.join(skill_dir, "SKILL.md")),
+                         os.path.join(repo, "skills", "claude", "codex", "SKILL.md"))
+
+    def test_installer_codex_skill_installs_to_both_dirs_and_uninstalls(self):
+        repo = self.make_repo()
+        src = os.path.join(repo, "skills", "codex", "claude", "SKILL.md")
+        res, home = self.run_installer(repo)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        dsts = [os.path.join(home, d, "skills", "claude", "SKILL.md") for d in (".codex", ".agents")]
+        for dst in dsts:
+            with self.subTest(dst=dst):
+                self.assertTrue(os.path.isfile(dst))
+                with open(src, encoding="utf-8") as a, open(dst, encoding="utf-8") as b:
+                    self.assertEqual(a.read(), b.read())
+
+        res, _ = self.run_installer(repo, "--uninstall")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        for dst in dsts:
+            with self.subTest(dst=dst):
+                self.assertFalse(os.path.exists(dst))
 
 
 if __name__ == "__main__":

@@ -17,11 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cross-Platform Compatibility**:
   - Implemented graceful file-lock degradation for non-POSIX / Windows native environments without `fcntl`, preventing import crashes in `bin/peer`.
   - Added comprehensive unit test `test_cross_platform_fcntl_fallback` covering no-fcntl fallback paths.
+  - Added `terminate_child()` in `bin/peer`: timeout / signal cleanup kills the child process group via `os.killpg` on POSIX, and falls back to `Popen.terminate()` / `Popen.kill()` where `os.killpg` / `os.getpgid` are missing (native Windows), instead of raising `AttributeError`. Signal handlers are registered by name, so a missing `SIGHUP` no longer crashes the worker.
+- **Installer (`install.sh`)**:
+  - Codex `/claude` skill is now installed to both `~/.codex/skills/claude/SKILL.md` (legacy path) and `~/.agents/skills/claude/SKILL.md` (current OpenAI path); `--uninstall` removes both.
+  - Pre-flight path checks refuse to run (exit 1, nothing deleted) when `PEER_HOME` is the repository itself, a symlink to it, or when any install source and target resolve to the same file.
+  - Foreign skill symlinks are backed up (link itself, not its target) and restored on `--uninstall`; re-running `--link` no longer backs up its own links.
+  - The real `peer doctor` exit code (0 / 2 / 3) is propagated as the installer exit code, with a dedicated message for an active STOP circuit-breaker lock (code 3).
+  - Claude install hints now list the official native installer first, then Homebrew and npm as alternatives.
+  - Usage hints only list commands that the detected CLIs can actually run.
+- **Hardening Tests**: new `TestHardeningFixes` suite covering billing-key isolation, auth probing, lock directory creation, installer path safety, exit-code propagation, skill backup/restore, `killpg` fallback and dual Codex skill paths. All tests run with a temporary lock directory / HOME, so a pre-existing `~/.peer-review` on the developer machine can no longer mask failures.
+- **CI**: Python 3.9 added to the test matrix; new "Installer smoke test (clean HOME)" step runs `install.sh --copy` and `--uninstall` against an empty temporary HOME and checks every installed file.
 
 ### Changed
+- **Minimum Python lowered to 3.9** (`requires-python = ">=3.9"`), with matching installer checks, README badge and `CONTRIBUTING.md`.
+- **Billing protection**: `OPENAI_API_KEY` and `CODEX_API_KEY` are stripped from child-process environments (`CHILD_ENV_BLOCKED_KEYS`) so the underlying CLI cannot silently switch to API billing.
+- **Stricter auth detection**:
+  - Claude: requires exit code 0, a JSON object, and `loggedIn` exactly `true`.
+  - Codex: requires exit code 0 and a full affirmative status line (`Logged in using ChatGPT` / `Logged in using an API key`); negative or partial phrases are reported as `unknown`.
 - **Documentation Refinement**:
   - Elevated the core narrative from a simple CLI invocation bridge to a robust **Multi-Agent Safety & Cost Governance Middleware**.
   - Unified bilingual (CN/EN) community contact cards (QQ & Telegram) with responsive layout tables.
+  - README: native Windows is not a supported install target; use WSL2. Clarified that `pip install` only installs the `peer` CLI and `./install.sh` must still be run to register the host skills.
+
+### Fixed
+- `ImageGlobalLock` now creates the lock directory before opening the lock file, fixing `FileNotFoundError` on machines without `~/.peer-review` (the CI failure in `test_cross_platform_fcntl_fallback`).
 
 ## [0.1.0] - 2026-10-30
 

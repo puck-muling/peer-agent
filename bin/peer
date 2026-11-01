@@ -52,7 +52,7 @@ import threading
 import time
 
 # ---------------------------------------------------------------- 基本设置
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 HOME = os.path.expanduser("~")
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PEER_HOME = os.environ.get("PEER_HOME") or os.path.join(HOME, ".peer-review")
@@ -200,12 +200,18 @@ def agent_bin(cfg, agent):
     return expanded
 
 
+CHILD_ENV_BLOCKED_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
+
+
 def child_env(base_env=None):
-    """调用 Codex / Claude 时使用的环境变量：去掉 Antigravity 的内部变量和令牌，并注入调用深度标记。"""
+    """调用 Codex / Claude 时使用的环境变量：去掉 Antigravity 的内部变量和令牌、
+    以及会让底层 CLI 改走 API 计费的 key，并注入调用深度标记。"""
     src = base_env if base_env is not None else os.environ
     env = {}
     for k, v in src.items():
         if k.startswith(("ANTIGRAVITY_", "ANTHROPIC_", "CLAUDE_CODE_USE_")) or "CSRF" in k.upper():
+            continue
+        if k in CHILD_ENV_BLOCKED_KEYS:
             continue
         if k.startswith("PEER_TEST_") or (k.startswith("PEER_") and k != "PEER_DEPTH"):
             continue
@@ -478,6 +484,10 @@ def changes_markdown(c, title="改动清单"):
 
 
 # ---------------------------------------------------------------- 登录方式
+CODEX_LOGIN_CHATGPT_RE = re.compile(r"Logged in using ChatGPT\b", re.I)
+CODEX_LOGIN_API_RE = re.compile(r"Logged in using (an )?API key\b", re.I)
+
+
 def auth_state(cfg, agent):
     """返回 (类别, 说明)。类别：subscription / api / unknown。不显示邮箱和凭证。"""
     b = agent_bin(cfg, agent)
@@ -486,13 +496,17 @@ def auth_state(cfg, agent):
         if env.get("ANTHROPIC_API_KEY"):
             return "api", "环境变量里有 ANTHROPIC_API_KEY（子进程调用时将被忽略；请核对 Claude CLI 的实际登录方式）"
         code, out, err = run_quick([b, "auth", "status"])
+        if code != 0:
+            return "unknown", "无法读取 Claude 登录状态（退出码 %s）" % code
         try:
             j = json.loads(out)
         except Exception:
-            return "unknown", "无法读取 Claude 登录状态（退出码 %s）" % code
+            j = None
+        if not isinstance(j, dict):
+            return "unknown", "无法读取 Claude 登录状态（输出不是预期的 JSON 对象）"
         method = str(j.get("authMethod", ""))
         sub = str(j.get("subscriptionType", ""))
-        if not j.get("loggedIn"):
+        if j.get("loggedIn") is not True:
             return "unknown", "Claude 未登录"
         desc = "authMethod=%s%s" % (method, (" / " + sub) if sub else "")
         if method in ("claude.ai", "oauth_token"):
@@ -502,16 +516,18 @@ def auth_state(cfg, agent):
         return "unknown", desc
     else:
         if env.get("OPENAI_API_KEY") or env.get("CODEX_API_KEY"):
-            hint = "（环境变量里有 OpenAI/Codex API key）"
+            hint = "（环境变量里有 OpenAI/Codex API key，子进程调用时将被忽略）"
         else:
             hint = ""
         code, out, err = run_quick([b, "login", "status"])
-        text = scrub((out + "\n" + err).strip()).splitlines()
+        text = [l.strip() for l in scrub((out + "\n" + err).strip()).splitlines()]
         first = next((l for l in text if "logged" in l.lower() or "login" in l.lower()), text[0] if text else "")
-        if "chatgpt" in first.lower():
-            return "subscription", first + hint
-        if "api" in first.lower():
-            return "api", first + hint
+        # 只认退出码 0 且以完整肯定句开头的状态行，避免 "Not logged in to ChatGPT" 之类的否定句被误判
+        if code == 0:
+            if any(CODEX_LOGIN_CHATGPT_RE.match(l) for l in text):
+                return "subscription", first + hint
+            if any(CODEX_LOGIN_API_RE.match(l) for l in text):
+                return "api", first + hint
         if hint:
             hint += "；先运行 codex login --with-api-key，再运行 peer doctor --approve"
         return "unknown", (first or "无法读取 Codex 登录状态（退出码 %s）" % code) + hint
@@ -904,6 +920,7 @@ class ImageGlobalLock:
 
     def __enter__(self):
         try:
+            os.makedirs(os.path.dirname(IMAGE_LOCK_PATH), exist_ok=True)
             self.fd = open(IMAGE_LOCK_PATH, "a+", encoding="utf-8")
             # 非阻塞轮询获取全局排他锁，带排队总超时（300秒），杜绝无限阻塞
             t0 = time.time()
@@ -1386,6 +1403,27 @@ def pump(src, path):
             f.flush()
 
 
+def terminate_child(child, grace):
+    """先礼后兵结束子进程：POSIX 按进程组 SIGTERM→SIGKILL；Windows 原生缺 killpg/getpgid 时降级为 terminate→kill。"""
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(child.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(grace)
+            os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+        return
+    try:
+        child.terminate()
+        try:
+            child.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            child.kill()
+    except OSError:
+        pass
+
+
 def cmd_run(run_dir):
     meta = read_json(os.path.join(run_dir, "meta.json"))
     if not meta:
@@ -1414,19 +1452,20 @@ def cmd_run(run_dir):
     def _sig_cleanup(signum, frame):
         if child and child.pid:
             try:
-                os.killpg(child.pid, signal.SIGTERM)
-                time.sleep(2.0)
-                os.killpg(child.pid, signal.SIGKILL)
+                terminate_child(child, 2.0)
             except Exception:
                 pass
         sys.exit(1)
 
-    try:
-        signal.signal(signal.SIGTERM, _sig_cleanup)
-        signal.signal(signal.SIGINT, _sig_cleanup)
-        signal.signal(signal.SIGHUP, _sig_cleanup)
-    except (ValueError, OSError):
-        pass
+    # Windows 原生没有 SIGHUP，按名称取，缺哪个跳过哪个
+    for sig_name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _sig_cleanup)
+        except (ValueError, OSError):
+            pass
 
     image_lock_ctx = None
     if meta.get("kind") == "image":
@@ -1511,9 +1550,7 @@ def cmd_run(run_dir):
                 else:
                     continue
                 try:
-                    os.killpg(child.pid, signal.SIGTERM)
-                    time.sleep(5)
-                    os.killpg(child.pid, signal.SIGKILL)
+                    terminate_child(child, 5)
                 except Exception:
                     pass
                 break

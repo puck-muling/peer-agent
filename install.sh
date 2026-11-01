@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PEER_HOME="${PEER_HOME:-$HOME/.peer-review}"
 LOCAL_BIN="$HOME/.local/bin"
+# Codex 技能目录：旧版扫描 ~/.codex/skills，OpenAI 现行文档为 ~/.agents/skills，两处都装
+CODEX_SKILL_DIRS=("$HOME/.codex/skills" "$HOME/.agents/skills")
 MODE="copy"
 
 print_banner() {
@@ -43,6 +45,60 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+print_claude_install_hint() {
+  # 官方首推原生安装，brew / npm 作为备选；只提示，不代装
+  local indent="${1:-   }"
+  echo "${indent}- 安装 Claude（官方推荐）: curl -fsSL https://claude.ai/install.sh | bash"
+  echo "${indent}  macOS 备选: brew install --cask claude-code；npm 备选（需已安装 Node.js）: npm install -g @anthropic-ai/claude-code"
+  echo "${indent}  安装后登录: claude auth login"
+}
+
+canon_path() {
+  # 规范化路径：解析父目录中的符号链接与 ..，但不跟随末级符号链接（rm 末级链接不会影响其指向）
+  local dir base suffix=""
+  dir="$(dirname "$1")"
+  base="$(basename "$1")"
+  while [ ! -d "$dir" ]; do
+    suffix="/$(basename "$dir")$suffix"
+    dir="$(dirname "$dir")"
+  done
+  dir="$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")"
+  printf '%s%s/%s\n' "${dir%/}" "$suffix" "$base"
+}
+
+assert_not_same_path() {
+  local src="$1"
+  local dst="$2"
+  if [ "$(canon_path "$src")" = "$(canon_path "$dst")" ]; then
+    echo "❌ 错误: 安装源与目标是同一个文件，已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "   源文件: $src" >&2
+    echo "   目标:   $dst" >&2
+    echo "👉 请把 PEER_HOME 设为仓库以外的目录（默认 ~/.peer-review），并确认仓库不在 $LOCAL_BIN 的上级位置后重试。" >&2
+    exit 1
+  fi
+}
+
+preflight_paths() {
+  # 任何 rm / ln / cp 之前统一校验，避免 PEER_HOME 指向仓库本身时删掉或自链接源文件
+  if [ "$(canon_path "$PEER_HOME/_")" = "$(canon_path "$SCRIPT_DIR/_")" ]; then
+    echo "❌ 错误: PEER_HOME 与 PeerAgent 仓库是同一目录（$SCRIPT_DIR），已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "👉 请把 PEER_HOME 设为仓库以外的目录（默认 ~/.peer-review）后重试。" >&2
+    exit 1
+  fi
+  assert_not_same_path "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer"
+  assert_not_same_path "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"
+  local f
+  for f in "$SCRIPT_DIR/templates"/*.md; do
+    assert_not_same_path "$f" "$PEER_HOME/templates/$(basename "$f")"
+  done
+  assert_not_same_path "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
+  assert_not_same_path "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
+  assert_not_same_path "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
+  for d in "${CODEX_SKILL_DIRS[@]}"; do
+    assert_not_same_path "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$d/claude/SKILL.md"
+  done
+}
+
 safe_uninstall_skill() {
   local src="$1"
   local dst="$2"
@@ -70,7 +126,7 @@ safe_uninstall_skill() {
     base="$(basename "$dst")"
     local latest_bak
     latest_bak="$(ls -t "${parent}/${base}".bak_* 2>/dev/null | head -n 1 || true)"
-    if [ -n "$latest_bak" ] && [ -f "$latest_bak" ]; then
+    if [ -n "$latest_bak" ] && { [ -f "$latest_bak" ] || [ -L "$latest_bak" ]; }; then
       echo "   还原备份技能: $(basename "$latest_bak") -> $base"
       mv "$latest_bak" "$dst"
     fi
@@ -91,7 +147,9 @@ uninstall_peer() {
   safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
   safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
   safe_uninstall_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
-  safe_uninstall_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
+  for d in "${CODEX_SKILL_DIRS[@]}"; do
+    safe_uninstall_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$d/claude/SKILL.md"
+  done
   echo "✅ 已移除技能链接与执行程序。保留 ~/.peer-review 历史数据。"
   exit 0
 }
@@ -100,13 +158,25 @@ safe_install_skill() {
   local src="$1"
   local dst="$2"
   mkdir -p "$(dirname "$dst")"
+  local bak="${dst}.bak_$(date +%Y%m%d%H%M%S)"
+  if [ -e "$bak" ] || [ -L "$bak" ]; then
+    bak="${bak}_$$"
+  fi
   if [ -L "$dst" ]; then
-    rm -f "$dst"
+    local target
+    target="$(readlink "$dst" || true)"
+    if [ "$target" = "$src" ]; then
+      # 上次 --link 安装留下的本仓库链接，直接替换
+      rm -f "$dst"
+    else
+      # 外来软链接：连同原指向一起备份（mv 不解引用，只移动链接本身），卸载时可还原
+      mv "$dst" "$bak"
+      echo "      检测到已有技能软链接（原指向: $target），已备份至: $bak"
+    fi
   elif [ -e "$dst" ]; then
     if ! cmp -s "$src" "$dst" 2>/dev/null; then
-      local bak="${dst}.bak_$(date +%Y%m%d%H%M%S)"
-      echo "      检测到已有技能文件，已备份至: $bak"
       mv "$dst" "$bak"
+      echo "      检测到已有技能文件，已备份至: $bak"
     fi
   fi
   if [ "$MODE" = "link" ]; then
@@ -116,6 +186,8 @@ safe_install_skill() {
   fi
 }
 
+preflight_paths
+
 if [ "$MODE" = "uninstall" ]; then
   uninstall_peer
 fi
@@ -124,17 +196,17 @@ print_banner
 
 echo "==> 1. 检查基础依赖环境..."
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "❌ 错误: 未检测到 python3，PeerAgent 核心调度器依赖 Python 3.10+。" >&2
+  echo "❌ 错误: 未检测到 python3，PeerAgent 核心调度器依赖 Python 3.9+。" >&2
   exit 1
 fi
 
 PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
-PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
+PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 9) else 0)")
 if [ "$PY_CHECK" != "1" ]; then
-  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: ${PY_VER}）。" >&2
+  echo "❌ 错误: PeerAgent 要求 Python 3.9 及以上版本（当前检测到: ${PY_VER}）。" >&2
   if [ "$(uname -s)" = "Linux" ]; then
-    echo "👉 Linux 升级建议：通过系统包管理器 apt / dnf / pacman 安装 Python 3.10+。" >&2
-    echo "   若系统仓库版本过旧，可用 pyenv 或 uv 安装 Python 3.10+，并确保 python3 指向新版本。" >&2
+    echo "👉 Linux 升级建议：通过系统包管理器 apt / dnf / pacman 安装 Python 3.9+。" >&2
+    echo "   若系统仓库版本过旧，可用 pyenv 或 uv 安装 Python 3.9+，并确保 python3 指向新版本。" >&2
   else
     echo "👉 macOS 升级建议（二选一）：" >&2
     echo "   1. 运行 Homebrew 安装: brew install python" >&2
@@ -142,26 +214,32 @@ if [ "$PY_CHECK" != "1" ]; then
   fi
   exit 1
 fi
-echo "   Python 版本: ${PY_VER} (符合 >= 3.10 要求)"
+echo "   Python 版本: ${PY_VER} (符合 >= 3.9 要求)"
+
+HAS_CLAUDE=0
+HAS_CODEX=0
 
 if command -v claude >/dev/null 2>&1; then
+  HAS_CLAUDE=1
   echo "   Claude: 已安装 ($(claude --version 2>/dev/null || echo 'OK'))"
 else
-  echo "   ⚠️ 提示: 未检测到 'claude' CLI。若需调用 Claude，请先安装官方 Claude: npm install -g @anthropic-ai/claude-code"
+  echo "   ⚠️ 提示: 未检测到 'claude' CLI。若需调用 Claude，请先安装官方 Claude："
+  print_claude_install_hint "     "
 fi
 
 if command -v codex >/dev/null 2>&1; then
+  HAS_CODEX=1
   echo "   Codex: 已安装 ($(codex --version 2>/dev/null || echo 'OK'))"
 else
   echo "   ⚠️ 提示: 未检测到 'codex' CLI。若需调用 Codex，请先安装官方 Codex: npm install -g @openai/codex"
 fi
 
-if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then
+if [ "$HAS_CLAUDE" = "0" ] && [ "$HAS_CODEX" = "0" ]; then
   echo ""
   echo "💡 提示: 未检测到任何已安装的官方 CLI（Claude 或 Codex）。"
   echo "   PeerAgent 需驱动本机官方 CLI 进行对等审阅，建议至少安装并登录一个："
   echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
-  echo "   - 安装 Claude: npm install -g @anthropic-ai/claude-code && claude auth login"
+  print_claude_install_hint "   "
 fi
 
 echo "==> 2. 初始化目标目录与核心组件..."
@@ -204,9 +282,11 @@ echo "   [Antigravity] 已安装 /codex 和 /claude 技能。"
 safe_install_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
 echo "   [Claude] 已安装 /codex 技能。"
 
-# C. Codex Skill
-safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
-echo "   [Codex]   已安装 /claude 技能。"
+# C. Codex Skill（旧版目录与官方现行目录各装一份）
+for d in "${CODEX_SKILL_DIRS[@]}"; do
+  safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$d/claude/SKILL.md"
+done
+echo "   [Codex]   已安装 /claude 技能（~/.codex/skills 与 ~/.agents/skills）。"
 
 configure_path_if_needed() {
   # Linux 登录 shell 读取 .profile；不受 .bashrc 非交互提前 return 的影响。
@@ -248,18 +328,60 @@ configure_path_if_needed() {
   echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
 }
 
+print_usage_hint() {
+  # 只列出当前已安装 CLI 能实际跑通的命令，缺失一侧给出安装指引
+  echo ""
+  if [ "$HAS_CLAUDE" = "1" ] && [ "$HAS_CODEX" = "1" ]; then
+    echo "使用方式："
+    echo "  1. 在 Antigravity 对话框中直接输入: /codex 审一下当前代码"
+    echo "  2. 在 Claude 终端中输入:       /codex 检查这个函数的逻辑边界"
+    echo "  3. 在 Codex 中输入:             /claude 审阅当前改动"
+  elif [ "$HAS_CLAUDE" = "1" ]; then
+    echo "当前仅检测到 Claude CLI，已具备调用 Claude 的技能："
+    echo "  - 在 Antigravity 对话框中输入: /claude 审一下当前代码"
+    echo "  - 或在终端直接调用: peer ask claude review --request ./review-task.md --cwd ."
+    echo ""
+    echo "⚠️ 若要在 Claude 终端中使用 /codex 对等互审，需先安装并登录 Codex："
+    echo "   npm install -g @openai/codex && codex login"
+    echo "   安装后运行 peer doctor 确认双端就绪即可，无需重新安装 PeerAgent。"
+  elif [ "$HAS_CODEX" = "1" ]; then
+    echo "当前仅检测到 Codex CLI，已具备调用 Codex 的技能："
+    echo "  - 在 Antigravity 对话框中输入: /codex 审一下当前代码"
+    echo "  - 或在终端直接调用: peer ask codex review --request ./review-task.md --cwd ."
+    echo ""
+    echo "⚠️ 若要在 Codex 中使用 /claude 对等互审，需先安装并登录 Claude："
+    print_claude_install_hint "   "
+    echo "   安装后运行 peer doctor 确认双端就绪即可，无需重新安装 PeerAgent。"
+  else
+    echo "⚠️ 未检测到任何官方 CLI，/codex 与 /claude 暂不可用。请至少安装并登录一个："
+    echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
+    print_claude_install_hint "   "
+    echo "   安装后运行 peer doctor 复查。"
+  fi
+  echo ""
+}
+
 echo "==> 4. 运行自检验证..."
-if "$LOCAL_BIN/peer" doctor; then
+# 显式保存 doctor 的真实退出码，不能让后续提示命令覆盖为 0
+DOCTOR_RC=0
+"$LOCAL_BIN/peer" doctor || DOCTOR_RC=$?
+if [ "$DOCTOR_RC" = "0" ]; then
   echo ""
-  echo "🎉 恭喜！PeerAgent 安装完成并自检通过！"
-  echo ""
-  echo "使用方式："
-  echo "  1. 在 Antigravity 对话框中直接输入: /codex 审一下当前代码"
-  echo "  2. 在 Claude 终端中输入:       /codex 检查这个函数的逻辑边界"
-  echo "  3. 在 Codex 中输入:             /claude 审阅当前改动"
-  echo ""
+  if [ "$HAS_CLAUDE" = "1" ] && [ "$HAS_CODEX" = "1" ]; then
+    echo "🎉 恭喜！PeerAgent 安装完成并自检通过！"
+  else
+    echo "✅ PeerAgent 已安装，自检通过（仅单侧 CLI 可用，对等互审需补装另一侧）。"
+  fi
+  print_usage_hint
   configure_path_if_needed
 else
-  echo "⚠️ 自检发现部分配置需确认，请根据上述提示核查。"
+  echo ""
+  if [ "$DOCTOR_RC" = "3" ]; then
+    echo "⛔ 自检发现熔断停机锁仍在生效（peer doctor 退出码 3）。请先人工核实上方列出的锁文件原因，确认安全后再手动处理。"
+  else
+    echo "⚠️ 自检未通过（peer doctor 退出码 ${DOCTOR_RC}），请根据上述提示核查后运行 peer doctor 复查。"
+  fi
+  print_usage_hint
   configure_path_if_needed
+  exit "$DOCTOR_RC"
 fi
