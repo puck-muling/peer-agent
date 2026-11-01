@@ -131,7 +131,10 @@ fi
 PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
 PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)")
 if [ "$PY_CHECK" != "1" ]; then
-  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: ${PY_VER}）。请先升级 Python。" >&2
+  echo "❌ 错误: PeerAgent 要求 Python 3.10 及以上版本（当前检测到: ${PY_VER}）。" >&2
+  echo "👉 macOS 升级建议（二选一）：" >&2
+  echo "   1. 运行 Homebrew 安装: brew install python" >&2
+  echo "   2. 访问官网下载安装包: https://www.python.org/downloads/macos/" >&2
   exit 1
 fi
 echo "   Python 版本: ${PY_VER} (符合 >= 3.10 要求)"
@@ -146,6 +149,14 @@ if command -v codex >/dev/null 2>&1; then
   echo "   Codex: 已安装 ($(codex --version 2>/dev/null || echo 'OK'))"
 else
   echo "   ⚠️ 提示: 未检测到 'codex' CLI。若需调用 Codex，请先安装官方 Codex: npm install -g @openai/codex"
+fi
+
+if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then
+  echo ""
+  echo "💡 提示: 未检测到任何已安装的官方 CLI（Claude 或 Codex）。"
+  echo "   PeerAgent 需驱动本机官方 CLI 进行对等审阅，建议至少安装并登录一个："
+  echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
+  echo "   - 安装 Claude: npm install -g @anthropic-ai/claude-code && claude login"
 fi
 
 echo "==> 2. 初始化目标目录与核心组件..."
@@ -192,6 +203,36 @@ echo "   [Claude] 已安装 /codex 技能。"
 safe_install_skill "$SCRIPT_DIR/skills/codex/claude/SKILL.md" "$HOME/.codex/skills/claude/SKILL.md"
 echo "   [Codex]   已安装 /claude 技能。"
 
+configure_path_if_needed() {
+  if [[ ":$PATH:" == *":$LOCAL_BIN:"* ]]; then
+    echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
+    return
+  fi
+
+  local rc_file=""
+  if [ -f "$HOME/.zshrc" ] || [[ "${SHELL:-}" == *"zsh"* ]]; then
+    rc_file="$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ] || [[ "${SHELL:-}" == *"bash"* ]]; then
+    rc_file="$HOME/.bashrc"
+  fi
+
+  if [ -n "$rc_file" ]; then
+    if ! grep -q "$LOCAL_BIN" "$rc_file" 2>/dev/null; then
+      echo "" >> "$rc_file"
+      echo "# PeerAgent CLI PATH" >> "$rc_file"
+      echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$rc_file"
+      echo "   ✅ 已自动将 $LOCAL_BIN 配置到 $(basename "$rc_file")。"
+      echo "👉 请运行以下命令使 PATH 在当前终端立即生效（新开终端将自动生效）："
+      echo "   source $rc_file"
+      return
+    fi
+  fi
+
+  echo "⚠️  注意: $LOCAL_BIN 尚未加入系统的 PATH 环境变量。"
+  echo "👉 建议在 ~/.zshrc 或 ~/.bashrc 追加以下内容并重新打开终端："
+  echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
+}
+
 echo "==> 4. 运行自检验证..."
 if "$LOCAL_BIN/peer" doctor; then
   echo ""
@@ -202,18 +243,8 @@ if "$LOCAL_BIN/peer" doctor; then
   echo "  2. 在 Claude 终端中输入:       /codex 检查这个函数的逻辑边界"
   echo "  3. 在 Codex 中输入:             /claude 审阅当前改动"
   echo ""
-  if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
-    echo "⚠️  注意: $LOCAL_BIN 尚未加入系统的 PATH 环境变量。"
-    echo "👉 建议在 ~/.zshrc 或 ~/.bashrc 追加以下内容并重新打开终端："
-    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
-  else
-    echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
-  fi
+  configure_path_if_needed
 else
   echo "⚠️ 自检发现部分配置需确认，请根据上述提示核查。"
-  if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
-    echo ""
-    echo "⚠️  注意: $LOCAL_BIN 尚未加入系统的 PATH 环境变量。"
-    echo "👉 建议执行: export PATH=\"\$HOME/.local/bin:\$PATH\""
-  fi
+  configure_path_if_needed
 fi
