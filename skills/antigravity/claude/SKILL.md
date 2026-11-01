@@ -2,6 +2,7 @@
 name: claude
 description: 用户输入 /claude 时使用：把任务交给 Claude——出方案、审阅、给结论或建议、修改执行。也用于方案流程里的“汇总意见”“勾选采纳”“终审”“冻结方案”“解冻”“按冻结版执行”“给我交接语”；勾选和终审调用老大审阅技能。Antigravity 负责准备材料、调用、核实和汇报，用户拍板。
 ---
+<!-- managed-by: peer-agent -->
 
 # /claude：让 Claude 出方案、审阅、给建议或执行
 

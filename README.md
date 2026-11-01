@@ -233,7 +233,7 @@ peer since-freeze ./方案-v2_冻结v001.md
 #### 1. `approved_auth` 认证防静默扣费锁
 
 * **拦截原理**：PeerAgent 在发起任何调用（`peer ask`）前，会强制调用官方 CLI 的真实鉴权检查并扫描环境变量，把当前登录方式（`subscription` / `api` / `unknown`）与配置文件中的 `approved_auth`（默认均为 `subscription`）逐一比对。
-* **为什么防扣费**：如果你平常使用 Claude Pro 或 ChatGPT Plus 订阅，但终端环境中无意间注入了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，或者 CLI 登录态失效掉入 API 计费模式，PeerAgent 会**在发送任何网络请求之前直接阻断**（退出码 3），明确输出差异并拒绝调用，绝不产生一分钱意外账单。
+* **为什么防扣费**：如果你平常使用 Claude Pro 或 ChatGPT Plus 订阅，但终端环境中无意间注入了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，或者 CLI 登录态失效掉入 API 计费模式，PeerAgent 检测到当前登录状态与已核准模式（`approved_auth`）不一致时，会**在发起调用前主动阻断并退出**（退出码 3），明确输出差异并拒绝调用。它只比对登录类别，不能验证授权范围、可用余额或最终账单。
 * **配套管理工具**：
   * **诊断工具 `peer doctor`**：一键打印各渠道登录状态及与 `approved_auth` 的比对结果（显示 `✅ 与已确认一致` 或 `⚠️ 与已确认不一致`）。
   * **授权工具 `peer doctor --approve`**：若你确认有意使用官方 API 计费，可在人工核验终端输出与资费预期后，显式运行该命令将当前模式固化为新基线。此操作严禁由 AI Agent 自动调用。

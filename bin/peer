@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# managed-by: peer-agent（install.sh --uninstall 据此识别本工具安装的文件，请勿删除）
 """peer：Antigravity 调用 Codex / Claude 的统一入口（/codex、/claude 两个 skill 共用）
 
 用法：
@@ -1404,12 +1405,19 @@ def pump(src, path):
 
 
 def terminate_child(child, grace):
-    """先礼后兵结束子进程：POSIX 按进程组 SIGTERM→SIGKILL；Windows 原生缺 killpg/getpgid 时降级为 terminate→kill。"""
-    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+    """先礼后兵结束子进程：POSIX 按进程组 SIGTERM→SIGKILL；Windows 原生缺 killpg 时降级为 terminate→kill。
+
+    子进程一律以 start_new_session=True 启动，进程组号恒等于 child.pid。不用 os.getpgid：
+    直接子进程先退出并被回收后它会报 ESRCH，导致仍在组内的孙进程漏杀。
+    """
+    if hasattr(os, "killpg"):
+        pgid = child.pid
         try:
-            pgid = os.getpgid(child.pid)
             os.killpg(pgid, signal.SIGTERM)
-            time.sleep(grace)
+        except OSError:
+            return  # 整个进程组已不存在
+        time.sleep(grace)
+        try:
             os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except OSError:
             pass

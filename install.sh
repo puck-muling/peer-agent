@@ -10,6 +10,8 @@ LOCAL_BIN="$HOME/.local/bin"
 # Codex 技能目录：旧版扫描 ~/.codex/skills，OpenAI 现行文档为 ~/.agents/skills，两处都装
 CODEX_SKILL_DIRS=("$HOME/.codex/skills" "$HOME/.agents/skills")
 MODE="copy"
+# 写入本工具安装的每个文件，卸载时据此精确识别归属，避免误删用户同名文件
+PEER_MARKER="managed-by: peer-agent"
 
 print_banner() {
   cat << 'EOF'
@@ -55,21 +57,36 @@ print_claude_install_hint() {
 
 canon_path() {
   # 规范化路径：解析父目录中的符号链接与 ..，但不跟随末级符号链接（rm 末级链接不会影响其指向）
-  local dir base suffix=""
+  # 不存在的目录后接 . 或 .. 无法按字面拼回（如 repo/nope/.. 会被拼成 repo/nope/.. 而非 repo），直接返回非零
+  local dir base seg suffix=""
   dir="$(dirname "$1")"
   base="$(basename "$1")"
+  case "$base" in .|..) return 1 ;; esac
   while [ ! -d "$dir" ]; do
-    suffix="/$(basename "$dir")$suffix"
+    seg="$(basename "$dir")"
+    case "$seg" in .|..) return 1 ;; esac
+    suffix="/$seg$suffix"
     dir="$(dirname "$dir")"
   done
   dir="$(cd "$dir" 2>/dev/null && pwd -P || printf '%s' "$dir")"
   printf '%s%s/%s\n' "${dir%/}" "$suffix" "$base"
 }
 
+canon_or_die() {
+  if ! canon_path "$1"; then
+    echo "❌ 错误: 无法规范化路径（不存在的目录后接 . 或 .. 路径段），已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "   路径: $1" >&2
+    exit 1
+  fi
+}
+
 assert_not_same_path() {
   local src="$1"
   local dst="$2"
-  if [ "$(canon_path "$src")" = "$(canon_path "$dst")" ]; then
+  local src_c dst_c
+  src_c="$(canon_or_die "$src")" || exit 1
+  dst_c="$(canon_or_die "$dst")" || exit 1
+  if [ "$src_c" = "$dst_c" ]; then
     echo "❌ 错误: 安装源与目标是同一个文件，已安全终止（未删除或覆盖任何文件）。" >&2
     echo "   源文件: $src" >&2
     echo "   目标:   $dst" >&2
@@ -80,7 +97,17 @@ assert_not_same_path() {
 
 preflight_paths() {
   # 任何 rm / ln / cp 之前统一校验，避免 PEER_HOME 指向仓库本身时删掉或自链接源文件
-  if [ "$(canon_path "$PEER_HOME/_")" = "$(canon_path "$SCRIPT_DIR/_")" ]; then
+  case "/$PEER_HOME/" in
+    */../*|*/./*)
+      echo "❌ 错误: PEER_HOME 含有 . 或 .. 路径段（$PEER_HOME），已安全终止（未删除或覆盖任何文件）。" >&2
+      echo "👉 请把 PEER_HOME 设为不含 . / .. 的绝对路径（默认 ~/.peer-review）后重试。" >&2
+      exit 1
+      ;;
+  esac
+  local home_c repo_c
+  home_c="$(canon_or_die "$PEER_HOME/_")" || exit 1
+  repo_c="$(canon_or_die "$SCRIPT_DIR/_")" || exit 1
+  if [ "$home_c" = "$repo_c" ]; then
     echo "❌ 错误: PEER_HOME 与 PeerAgent 仓库是同一目录（$SCRIPT_DIR），已安全终止（未删除或覆盖任何文件）。" >&2
     echo "👉 请把 PEER_HOME 设为仓库以外的目录（默认 ~/.peer-review）后重试。" >&2
     exit 1
@@ -99,26 +126,46 @@ preflight_paths() {
   done
 }
 
+path_within() {
+  # $1 是否等于目录 $2 或位于其下（逐段字面比较，不做模糊子串匹配）
+  case "$1" in
+    "$2"|"$2"/*) return 0 ;;
+  esac
+  return 1
+}
+
+is_peer_owned() {
+  # 判断 $2 是否由本工具安装（$1 为对应安装源）：
+  #   软链接：指向与安装源完全一致，或指向本仓库 / PEER_HOME 之内
+  #   普通文件：内容与安装源一致，或带有 PEER_MARKER 标记
+  local src="$1"
+  local dst="$2"
+  if [ -L "$dst" ]; then
+    local target
+    target="$(readlink "$dst" || true)"
+    [ -n "$target" ] || return 1
+    case "$target" in
+      /*) ;;
+      *) target="$(dirname "$dst")/$target" ;;
+    esac
+    [ "$target" = "$src" ] && return 0
+    local root
+    for root in "$SCRIPT_DIR" "$(cd "$SCRIPT_DIR" && pwd -P)" "$PEER_HOME"; do
+      path_within "$target" "$root" && return 0
+    done
+    return 1
+  elif [ -f "$dst" ]; then
+    cmp -s "$src" "$dst" 2>/dev/null && return 0
+    grep -qF "$PEER_MARKER" "$dst" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
 safe_uninstall_skill() {
   local src="$1"
   local dst="$2"
-  local is_our_file=0
 
-  if [ -L "$dst" ]; then
-    # 若是指向本仓库或同名 peer 技能的符号链接
-    local target
-    target="$(readlink "$dst" || true)"
-    if [[ "$target" == *"$SCRIPT_DIR"* ]] || [[ "$target" == *"peer"* ]]; then
-      is_our_file=1
-    fi
-  elif [ -f "$dst" ]; then
-    # 若内容与仓库一致，或包含 peer 特征标记
-    if cmp -s "$src" "$dst" 2>/dev/null || grep -q "PEER_HOME" "$dst" 2>/dev/null; then
-      is_our_file=1
-    fi
-  fi
-
-  if [ "$is_our_file" = "1" ]; then
+  if is_peer_owned "$src" "$dst"; then
     rm -f "$dst"
     local parent
     parent="$(dirname "$dst")"
@@ -131,15 +178,17 @@ safe_uninstall_skill() {
       mv "$latest_bak" "$dst"
     fi
     rmdir "$(dirname "$dst")" 2>/dev/null || true
-  elif [ -e "$dst" ]; then
-    echo "   跳过非 PeerAgent 自建技能文件: $dst"
+  elif [ -e "$dst" ] || [ -L "$dst" ]; then
+    echo "   ⚠️ 跳过非 PeerAgent 安装的技能文件（未删除）: $dst"
   fi
 }
 
 uninstall_peer() {
   echo "正在卸载 PeerAgent..."
-  if [ -L "$LOCAL_BIN/peer" ] || [ -f "$LOCAL_BIN/peer" ]; then
+  if is_peer_owned "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"; then
     rm -f "$LOCAL_BIN/peer"
+  elif [ -e "$LOCAL_BIN/peer" ] || [ -L "$LOCAL_BIN/peer" ]; then
+    echo "   ⚠️ 跳过非 PeerAgent 安装的执行程序（未删除）: $LOCAL_BIN/peer"
   fi
   if [ -L "$PEER_HOME/bin/peer" ] || [ -f "$PEER_HOME/bin/peer" ]; then
     rm -f "$PEER_HOME/bin/peer"
@@ -154,6 +203,41 @@ uninstall_peer() {
   exit 0
 }
 
+check_install_dir() {
+  # 目标目录（或其最近的已存在上级）必须是可写目录；不能是常规文件或失效链接
+  local probe="$1"
+  while [ ! -e "$probe" ] && [ ! -L "$probe" ]; do
+    probe="$(dirname "$probe")"
+  done
+  if [ ! -d "$probe" ]; then
+    echo "❌ 错误: 安装目标路径被非目录占用，已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "   目标目录: $1" >&2
+    echo "   冲突路径: $probe（不是目录）" >&2
+    echo "👉 请人工确认该路径用途，移走或改名后重试。" >&2
+    exit 1
+  fi
+  if [ ! -w "$probe" ]; then
+    echo "❌ 错误: 安装目标目录不可写，已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "   目标目录: $1" >&2
+    echo "   无写权限: $probe" >&2
+    echo "👉 请检查该目录的属主与权限后重试（不要用 sudo 运行本脚本）。" >&2
+    exit 1
+  fi
+}
+
+preflight_install_dirs() {
+  # 任何写入之前一次性检查全部目标目录，避免装到一半才失败、留下半套技能
+  local d
+  for d in "$PEER_HOME" "$LOCAL_BIN" \
+           "$HOME/.gemini/config/skills/codex" "$HOME/.gemini/config/skills/claude" \
+           "$HOME/.claude/skills/codex"; do
+    check_install_dir "$d"
+  done
+  for d in "${CODEX_SKILL_DIRS[@]}"; do
+    check_install_dir "$d/claude"
+  done
+}
+
 safe_install_skill() {
   local src="$1"
   local dst="$2"
@@ -162,6 +246,7 @@ safe_install_skill() {
   if [ -e "$bak" ] || [ -L "$bak" ]; then
     bak="${bak}_$$"
   fi
+  local backed_up=0
   if [ -L "$dst" ]; then
     local target
     target="$(readlink "$dst" || true)"
@@ -171,18 +256,36 @@ safe_install_skill() {
     else
       # 外来软链接：连同原指向一起备份（mv 不解引用，只移动链接本身），卸载时可还原
       mv "$dst" "$bak"
+      backed_up=1
       echo "      检测到已有技能软链接（原指向: $target），已备份至: $bak"
     fi
   elif [ -e "$dst" ]; then
     if ! cmp -s "$src" "$dst" 2>/dev/null; then
       mv "$dst" "$bak"
+      backed_up=1
       echo "      检测到已有技能文件，已备份至: $bak"
     fi
   fi
+  local ok=1
   if [ "$MODE" = "link" ]; then
-    ln -sf "$src" "$dst"
+    ln -sf "$src" "$dst" || ok=0
   else
-    cp -f "$src" "$dst"
+    cp -f "$src" "$dst" || ok=0
+  fi
+  if [ "$ok" = "0" ]; then
+    rm -f "$dst" 2>/dev/null || true
+    echo "❌ 错误: 技能写入失败，已安全终止。" >&2
+    echo "   源文件: $src" >&2
+    echo "   目标:   $dst" >&2
+    if [ "$backed_up" = "1" ]; then
+      if mv "$bak" "$dst"; then
+        echo "   已还原原有技能文件: $dst" >&2
+      else
+        echo "   ⚠️ 原有技能文件还原失败，备份仍保留在: $bak" >&2
+      fi
+    fi
+    echo "👉 请检查目标目录的权限与剩余空间后重试。" >&2
+    exit 1
   fi
 }
 
@@ -243,6 +346,7 @@ if [ "$HAS_CLAUDE" = "0" ] && [ "$HAS_CODEX" = "0" ]; then
 fi
 
 echo "==> 2. 初始化目标目录与核心组件..."
+preflight_install_dirs
 mkdir -p "$PEER_HOME/bin" "$PEER_HOME/templates" "$PEER_HOME/logs" "$LOCAL_BIN"
 
 if [ "$MODE" = "link" ]; then

@@ -6,9 +6,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -613,14 +615,28 @@ class TestHardeningFixes(unittest.TestCase):
                 self.assertTrue(os.path.exists(os.path.join(lock_dir, "image.lock")))
 
     def test_terminate_child_uses_process_group_on_posix(self):
+        """进程组号直接取 child.pid，不调用 os.getpgid（直接子进程已回收时它会报 ESRCH）。"""
         child = Mock(pid=4321)
         with patch.object(peer.os, "killpg", create=True) as killpg, \
-             patch.object(peer.os, "getpgid", create=True, return_value=4321), \
-             patch.object(peer.time, "sleep"):
+             patch.object(peer.os, "getpgid", create=True,
+                          side_effect=ProcessLookupError(3, "No such process")) as getpgid, \
+             patch.object(peer.time, "sleep") as sleep:
             peer.terminate_child(child, 5)
         sigkill = getattr(peer.signal, "SIGKILL", peer.signal.SIGTERM)
         self.assertEqual([c.args for c in killpg.call_args_list],
                          [(4321, peer.signal.SIGTERM), (4321, sigkill)])
+        sleep.assert_called_once_with(5)
+        getpgid.assert_not_called()
+        child.terminate.assert_not_called()
+
+    def test_terminate_child_skips_wait_when_group_already_gone(self):
+        child = Mock(pid=4321)
+        with patch.object(peer.os, "killpg", create=True,
+                          side_effect=ProcessLookupError(3, "No such process")) as killpg, \
+             patch.object(peer.time, "sleep") as sleep:
+            peer.terminate_child(child, 5)
+        self.assertEqual(killpg.call_count, 1)
+        sleep.assert_not_called()
         child.terminate.assert_not_called()
 
     def test_terminate_child_falls_back_without_killpg(self):
@@ -648,6 +664,48 @@ class TestHardeningFixes(unittest.TestCase):
         peer.terminate_child(child, 0.2)
         self.assertIsNotNone(child.wait(timeout=10))
 
+    @staticmethod
+    def pid_alive(pid):
+        """进程仍在运行返回 True；已不存在或只剩僵尸（容器内 PID 1 未必回收）返回 False。"""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        try:
+            with open("/proc/%d/stat" % pid, encoding="utf-8") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            pass
+        res = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+        return res.returncode == 0 and not res.stdout.strip().startswith("Z")
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "需要 POSIX 进程组")
+    def test_terminate_child_kills_grandchild_after_direct_child_reaped(self):
+        """直接子进程先退出并被回收后，仍要按进程组杀掉它留下的孙进程。"""
+        child = subprocess.Popen(["sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"],
+                                 stdout=subprocess.PIPE, text=True, start_new_session=True)
+        grandchild = int(child.stdout.readline())
+        child.stdout.close()
+
+        def kill_grandchild():
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except OSError:
+                pass
+        self.addCleanup(kill_grandchild)
+
+        child.wait(timeout=10)
+        self.assertTrue(self.pid_alive(grandchild))
+        with self.assertRaises(ProcessLookupError):
+            os.getpgid(child.pid)  # 旧实现正是在这里失败而漏杀孙进程
+        peer.terminate_child(child, 0.2)
+        deadline = time.time() + 5
+        while self.pid_alive(grandchild) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(self.pid_alive(grandchild), "孙进程未被进程组清理杀掉")
+
     # ---------------------------------------------------------- install.sh
     def make_repo(self, doctor_rc=0):
         """在临时目录复制一份安装所需文件，并把 bin/peer 换成按指定退出码返回的 doctor 桩。"""
@@ -663,9 +721,11 @@ class TestHardeningFixes(unittest.TestCase):
         os.chmod(stub, 0o755)
         return repo
 
-    def run_installer(self, repo, *args, peer_home=None):
-        home = os.path.join(self.test_dir, "home")
-        os.makedirs(home, exist_ok=True)
+    def run_installer(self, repo, *args, peer_home=None, home=None):
+        """home 显式传入时按原样使用、不预先创建（用于验证含 .. 的路径）。"""
+        if home is None:
+            home = os.path.join(self.test_dir, "home")
+            os.makedirs(home, exist_ok=True)
         tool_bin = os.path.join(self.test_dir, "toolbin")
         os.makedirs(tool_bin, exist_ok=True)
         py = os.path.join(tool_bin, "python3")
@@ -693,6 +753,141 @@ class TestHardeningFixes(unittest.TestCase):
                 for t in os.listdir(os.path.join(repo, "templates")):
                     self.assertFalse(os.path.islink(os.path.join(repo, "templates", t)))
                 shutil.rmtree(repo)
+
+    def assert_repo_untouched(self, repo, before):
+        src = os.path.join(repo, "bin", "peer")
+        self.assertFalse(os.path.islink(src))
+        with open(src, encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)
+        for t in os.listdir(os.path.join(repo, "templates")):
+            self.assertFalse(os.path.islink(os.path.join(repo, "templates", t)))
+        self.assertFalse(os.path.exists(os.path.join(repo, "config.json")))
+
+    def test_installer_refuses_peer_home_with_dotdot_segment(self):
+        """PEER_HOME=repo/nope/..：nope 不存在时旧版 canon_path 拼不回 repo，会放行并删掉仓库 bin/peer。"""
+        for mode in ("--copy", "--link", "--uninstall"):
+            with self.subTest(mode=mode):
+                repo = self.make_repo()
+                with open(os.path.join(repo, "bin", "peer"), encoding="utf-8") as f:
+                    before = f.read()
+                res, _ = self.run_installer(repo, mode, peer_home=os.path.join(repo, "nope", ".."))
+                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+                self.assertIn("已安全终止", res.stderr)
+                self.assertFalse(os.path.exists(os.path.join(repo, "nope")))
+                self.assert_repo_untouched(repo, before)
+                shutil.rmtree(repo)
+
+    def test_installer_canon_path_rejects_unresolvable_dotdot(self):
+        """即便 PEER_HOME 合法，其他目标路径含“不存在目录 + ..”时 canon_path 也必须阻断而非放行。"""
+        repo = self.make_repo()
+        with open(os.path.join(repo, "bin", "peer"), encoding="utf-8") as f:
+            before = f.read()
+        os.makedirs(os.path.join(self.test_dir, "home"))
+        home = os.path.join(self.test_dir, "home", "nope", "..")
+        res, _ = self.run_installer(repo, "--copy", home=home,
+                                    peer_home=os.path.join(self.test_dir, "ph"))
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("无法规范化路径", res.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.test_dir, "home", "nope")))
+        self.assertFalse(os.path.exists(os.path.join(self.test_dir, "ph")))
+        self.assert_repo_untouched(repo, before)
+
+    def test_installer_uninstall_keeps_foreign_files(self):
+        """卸载只删本工具装的文件：同名技能、名字含 peer 的外来软链接、他人的 ~/.local/bin/peer 一律保留。"""
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        other = os.path.join(self.test_dir, "other-peer-tools", "SKILL.md")
+        os.makedirs(os.path.dirname(other))
+        with open(other, "w", encoding="utf-8") as f:
+            f.write("someone else's skill\n")
+        claude_skill = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+        codex_link = os.path.join(home, ".codex", "skills", "claude", "SKILL.md")
+        local_peer = os.path.join(home, ".local", "bin", "peer")
+        old_ours = os.path.join(home, ".agents", "skills", "claude", "SKILL.md")
+        for p in (claude_skill, codex_link, local_peer, old_ours):
+            os.makedirs(os.path.dirname(p))
+        with open(claude_skill, "w", encoding="utf-8") as f:
+            f.write("my own skill, mentions $PEER_HOME\n")
+        os.symlink(other, codex_link)
+        with open(local_peer, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho mine\n")
+        with open(old_ours, "w", encoding="utf-8") as f:
+            f.write("---\nname: claude\n---\n<!-- managed-by: peer-agent -->\nolder version\n")
+
+        res, _ = self.run_installer(repo, "--uninstall")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        with open(claude_skill, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "my own skill, mentions $PEER_HOME\n")
+        self.assertEqual(os.readlink(codex_link), other)
+        with open(local_peer, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "#!/bin/sh\necho mine\n")
+        self.assertFalse(os.path.exists(old_ours))
+        for p in (claude_skill, codex_link, local_peer):
+            self.assertIn(p, res.stdout)
+
+    def test_installer_uninstall_removes_own_files_in_both_modes(self):
+        for mode in ("--copy", "--link"):
+            with self.subTest(mode=mode):
+                repo = self.make_repo()
+                res, home = self.run_installer(repo, mode)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                local_peer = os.path.join(home, ".local", "bin", "peer")
+                skill = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+                self.assertTrue(os.path.lexists(local_peer))
+                self.assertTrue(os.path.lexists(skill))
+                res, _ = self.run_installer(repo, "--uninstall")
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                self.assertFalse(os.path.lexists(local_peer))
+                self.assertFalse(os.path.lexists(skill))
+                self.assertNotIn("跳过", res.stdout)
+                shutil.rmtree(repo)
+                shutil.rmtree(home)
+
+    def test_skill_files_carry_managed_marker(self):
+        for agent, target in (("antigravity", "claude"), ("antigravity", "codex"),
+                              ("claude", "codex"), ("codex", "claude")):
+            with self.subTest(skill="%s/%s" % (agent, target)):
+                with open(os.path.join(REPO_DIR, "skills", agent, target, "SKILL.md"), encoding="utf-8") as f:
+                    content = f.read()
+                self.assertTrue(content.startswith("---\n"), "frontmatter 必须仍在首行")
+                self.assertIn("<!-- managed-by: peer-agent -->", content)
+
+    def test_installer_refuses_non_directory_target_before_writing(self):
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        os.makedirs(home)
+        with open(os.path.join(home, ".agents"), "w", encoding="utf-8") as f:
+            f.write("not a directory\n")
+        res, _ = self.run_installer(repo)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("不是目录", res.stderr)
+        self.assertFalse(os.path.exists(os.path.join(home, ".peer-review")))
+        self.assertFalse(os.path.exists(os.path.join(home, ".claude")))
+        self.assertFalse(os.path.exists(os.path.join(home, ".local")))
+
+    def test_installer_restores_backup_when_skill_copy_fails(self):
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        dst = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+        os.makedirs(os.path.dirname(dst))
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write("user skill\n")
+        tool_bin = os.path.join(self.test_dir, "toolbin")
+        os.makedirs(tool_bin)
+        fake_cp = os.path.join(tool_bin, "cp")
+        with open(fake_cp, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nfor a; do last="$a"; done\n'
+                    'case "$last" in */.claude/skills/codex/SKILL.md) echo "cp: simulated failure" >&2; exit 1 ;; esac\n'
+                    'exec /bin/cp "$@"\n')
+        os.chmod(fake_cp, 0o755)
+
+        res, _ = self.run_installer(repo)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("技能写入失败", res.stderr)
+        self.assertIn("已还原原有技能文件", res.stderr)
+        with open(dst, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "user skill\n")
+        self.assertEqual([n for n in os.listdir(os.path.dirname(dst)) if ".bak_" in n], [])
 
     def test_installer_refuses_peer_home_symlinked_to_repo(self):
         repo = self.make_repo()

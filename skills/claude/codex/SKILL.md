@@ -5,6 +5,7 @@ argument-hint: "<任务描述>"
 disable-model-invocation: true
 allowed-tools: Bash(*)
 ---
+<!-- managed-by: peer-agent -->
 
 # /codex：调用 Codex
 

@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Minimum Python lowered to 3.9** (`requires-python = ">=3.9"`), with matching installer checks, README badge and `CONTRIBUTING.md`.
-- **Billing protection**: `OPENAI_API_KEY` and `CODEX_API_KEY` are stripped from child-process environments (`CHILD_ENV_BLOCKED_KEYS`) so the underlying CLI cannot silently switch to API billing.
+- **Billing protection**: `OPENAI_API_KEY` and `CODEX_API_KEY` are stripped from child-process environments (`CHILD_ENV_BLOCKED_KEYS`) so a leftover key in the parent shell is not passed to the underlying CLI. Separately, when the detected login state does not match the approved mode (`approved_auth`), the call is blocked before invocation and `peer` exits with code 3.
 - **Stricter auth detection**:
   - Claude: requires exit code 0, a JSON object, and `loggedIn` exactly `true`.
   - Codex: requires exit code 0 and a full affirmative status line (`Logged in using ChatGPT` / `Logged in using an API key`); negative or partial phrases are reported as `unknown`.
@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `ImageGlobalLock` now creates the lock directory before opening the lock file, fixing `FileNotFoundError` on machines without `~/.peer-review` (the CI failure in `test_cross_platform_fcntl_fallback`).
+- `install.sh`: `PEER_HOME` containing `.` or `..` segments is refused (exit 1); `canon_path` now fails instead of re-joining a missing directory followed by `..` (e.g. `repo/nope/..`) into a path that bypassed the same-directory check.
+- `terminate_child()` signals the process group `child.pid` directly (children are started with `start_new_session=True`) instead of calling `os.getpgid`, which raised `ESRCH` once the direct child had been reaped and left grandchildren running.
+- `install.sh --uninstall` ownership checks are exact: symlinks must point to the install source or inside the repository / `PEER_HOME`; regular files must match the source or carry the `managed-by: peer-agent` marker (now in all four `SKILL.md` files and `bin/peer`). Foreign files, including `~/.local/bin/peer`, are skipped with a warning instead of deleted.
+- `install.sh` pre-checks every target directory (not a regular file, writable) before writing anything, and restores the backed-up skill if copying / linking a skill fails.
+- Docs: replaced absolute "no surprise bill" wording with what `approved_auth` actually does (mismatch → blocked before invocation, exit code 3).
 
 ## [0.1.0] - 2026-10-30
 
