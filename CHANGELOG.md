@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Security
+- **Claude `/codex` skill injection (`skills/claude/codex/SKILL.md`)**: Claude Code substitutes every `$ARGUMENTS` occurrence in the skill text, so a multi-line argument escaped the old comment line into bare Bash (and inputs such as `锁(竞争)` broke the script with a syntax error), while a line equal to the fixed heredoc delimiter `PEER_ARGUMENTS_EOF_7f3a9c` closed the heredoc early. The user's arguments now only appear in a Markdown data block; the request file is written with the `Write` tool (added to `allowed-tools`), and the Bash steps only receive a generated file path, which is validated before use. No skill keeps `$ARGUMENTS` or a fixed heredoc inside a code block.
+
+### Fixed
+- **Write lock initialization race (`bin/peer`)**: `acquire_write_lock` writes the complete JSON (`run_id`, `pid`, `created_ts`) to a unique temp file in the same directory and publishes it with `os.link`, so a visible lock file is never empty. Where hard links are unavailable it falls back to exclusive create + read-back check. Empty or unparsable locks get a strict 30-second grace period based on `st_mtime`. Stale locks are reclaimed by renaming to a unique path and verifying `run_id` and inode before deleting (a mismatching lock is put back). Acquisition and reclaim are serialized with `flock` on POSIX, or with an exclusive reclaim mutex file where `fcntl` is unavailable. Release goes through `release_write_lock`, which only removes the caller's own lock.
+- **Orphaned grandchildren after normal exit (`bin/peer`)**: the dispatcher now calls `terminate_child` in a `finally` block on every path (normal exit, non-zero exit, timeout, stall, spawn error). Teardown order is fixed: kill the process group, join the pipe threads, compare the snapshot / write the unified diff, then release the write lock (also released on signal exit).
+- **Installer overwrote third-party `peer` (`install.sh`)**: in both `--copy` and `--link` modes, `$PEER_HOME/bin/peer` and `$LOCAL_BIN/peer` are checked with `is_peer_owned`; foreign files are moved to `.bak_<timestamp>` instead of being removed, and restored on `--uninstall`. Copy mode writes a temp file in the same directory and replaces the target with `mv -f`.
+- **Installer upgrade / uninstall hardening (`install.sh`)**: symlink targets are canonicalized with `canon_path` before ownership checks, so `repo/../elsewhere` no longer passes the prefix test. Pre-flight now also checks `$PEER_HOME/bin`, `templates`, `logs` and that no final target file is occupied by a directory. Skills that already carry the `managed-by: peer-agent` marker are replaced in place without creating stacked `.bak_` files, and `--uninstall` only restores the newest original (unmanaged) backup.
+
+### Changed
+- **README wording**: replaced "millisecond detection" and "physical isolation" claims with the actual mechanisms (process-group signal handling + STOP circuit breaker after the child exits; tool allow-list limits + prompt rules, not OS-level isolation).
+- **CI package validation**: builds a real wheel with `pip wheel --no-deps -w dist .`, installs it into a fresh virtual environment and runs `peer --help`.
+- **Tests**: full-text `$ARGUMENTS` substitution test over the whole `SKILL.md` (multi-line, parentheses, delimiter collision, command substitution) with `bash -n` and end-to-end routing; write-lock tests for empty/corrupt locks, grace period, reclaim verification, no-hardlink fallback and thread/process concurrency; dispatcher tests for normal-exit process-group cleanup and teardown order; installer tests for foreign `peer` backup/restore, link→copy upgrade, managed-skill upgrade without backups, canonicalized symlink ownership and extended pre-flight.
+
 ## [0.1.1] - 2026-11-01
 
 ### Added

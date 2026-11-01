@@ -112,6 +112,7 @@ STATE_CN = {
     "unknown": "未知（进程已结束但结果没有回收）",
 }
 TERMINAL = {"completed", "failed", "timeout"}
+WRITE_LOCK_GRACE_SECONDS = 30.0
 
 DEFAULT_CONFIG = {
     "bins": {"claude": "claude", "codex": "codex"},
@@ -836,17 +837,158 @@ def write_lock_path(root):
     return os.path.join(root, ".peer-review", "write.lock")
 
 
+def _unique_suffix():
+    return "%d.%r.%d" % (os.getpid(), time.time(), threading.get_ident())
+
+
+class _WriteLockGuard:
+    """POSIX 下用 flock 串行化同一项目的抢锁与陈旧锁回收判定；拿不到 flock（如原生 Windows）时 locked 为 False，
+    回收改由独占创建的回收互斥文件串行化。"""
+
+    def __init__(self, p):
+        self.path = p + ".guard"
+        self.f = None
+
+    @property
+    def locked(self):
+        return self.f is not None
+
+    def __enter__(self):
+        if fcntl:
+            try:
+                self.f = open(self.path, "a")
+                fcntl.flock(self.f, fcntl.LOCK_EX)
+            except OSError:
+                if self.f:
+                    self.f.close()
+                self.f = None
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.f:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_UN)
+            finally:
+                self.f.close()
+
+
+def _publish_write_lock(p, data):
+    """原子发布写锁：完整 JSON 先写入同目录临时文件，再 os.link 发布，锁文件一旦可见就是完整内容。
+
+    返回 True 表示拿到锁，False 表示锁已存在。
+    """
+    tmp = p + ".tmp." + _unique_suffix()
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, p)  # 目标已存在时原子抛出 FileExistsError
+            return True
+        except FileExistsError:
+            return False
+        except (AttributeError, NotImplementedError, OSError):
+            pass  # 文件系统不支持硬链接，降级为独占创建
+        try:
+            fd2 = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return False
+        # 降级路径存在短暂的空文件窗口，由读取方按 mtime 宽限期兜底；写完再回读核对归属
+        with os.fdopen(fd2, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return (read_json(p, {}) or {}).get("run_id") == data["run_id"]
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _rename_and_verify(p, expect_run_id, expect_ino):
+    """先改名到唯一路径，核对确实是判定为陈旧的那一把（run_id 与 inode 一致）才删除；不符则原样放回。"""
+    grave = p + ".stale." + _unique_suffix()
+    try:
+        os.rename(p, grave)
+    except OSError:
+        return
+    try:
+        info = read_json(grave, None)
+        rid = info.get("run_id") if isinstance(info, dict) else None
+        if rid == expect_run_id and os.stat(grave).st_ino == expect_ino:
+            return
+        # 判定之后锁已被换成新锁：放回原处，绝不误删
+        try:
+            os.link(grave, p)
+        except FileExistsError:
+            pass
+        except OSError:
+            if not os.path.lexists(p):
+                os.rename(grave, p)
+    finally:
+        try:
+            os.unlink(grave)
+        except OSError:
+            pass
+
+
+def _reclaim_write_lock(p, expect_run_id, expect_ino, serialized=True):
+    """回收陈旧锁。serialized=True 表示调用方已持有 flock；否则先独占创建回收互斥文件，
+    保证同一时刻只有一个回收者，并在互斥内复核 inode 未变再动手，避免两个回收者交错误删新锁。"""
+    if serialized:
+        _rename_and_verify(p, expect_run_id, expect_ino)
+        return
+    mutex = p + ".reclaim"
+    try:
+        os.close(os.open(mutex, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        try:
+            # 回收者中途崩溃遗留的互斥文件，超过宽限期后清掉，下一轮再回收
+            if time.time() - os.stat(mutex).st_mtime > WRITE_LOCK_GRACE_SECONDS:
+                os.remove(mutex)
+        except OSError:
+            pass
+        return
+    except OSError:
+        return
+    try:
+        try:
+            if os.stat(p).st_ino != expect_ino:
+                return
+        except FileNotFoundError:
+            return
+        _rename_and_verify(p, expect_run_id, expect_ino)
+    finally:
+        try:
+            os.remove(mutex)
+        except OSError:
+            pass
+
+
 def acquire_write_lock(root, run_id):
     p = write_lock_path(root)
-    for _ in range(2):
-        try:
-            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump({"run_id": run_id, "time": iso(), "pid": os.getpid(), "created_ts": time.time()}, f)
-            return None
-        except FileExistsError:
-            info = read_json(p, {}) or {}
-            other = info.get("run_id")
+    data = {"run_id": run_id, "time": iso(), "pid": os.getpid(), "created_ts": time.time()}
+    busy = "这个项目里已经有一个可写调用在运行（%s）。等它结束后再试，可用 peer status 查看。"
+    with _WriteLockGuard(p) as guard:
+        for _ in range(3):
+            if _publish_write_lock(p, data):
+                return None
+            try:
+                lock_st = os.stat(p)
+            except FileNotFoundError:
+                continue  # 持有者恰好释放，重试
+            age = time.time() - lock_st.st_mtime
+            info = read_json(p, None)
+            other = info.get("run_id") if isinstance(info, dict) else None
+            if not other:
+                if not os.path.lexists(p):
+                    continue  # 读取途中锁已被释放或回收，重试
+                # 空文件或残缺 JSON：可能有并发写入正在进行，按 mtime 严格给宽限期，绝不立判死亡锁
+                if age < WRITE_LOCK_GRACE_SECONDS:
+                    return busy % "锁文件正在写入"
+                _reclaim_write_lock(p, None, lock_st.st_ino, guard.locked)
+                continue
             st = read_json(os.path.join(root, ".peer-review", "runs", str(other), "status.json"), {}) or {}
             # 存活优先：同时检查管理进程 pid、实际执行子进程 child_pid 以及状态记录中的 pid
             owner_pid = info.get("pid")
@@ -854,18 +996,28 @@ def acquire_write_lock(root, run_id):
             st_pid = st.get("pid")
             alive = pid_alive(owner_pid) or pid_alive(child_pid) or pid_alive(st_pid)
 
-            # 启动宽限期保护：若锁创建不足 30 秒，即使 status.json 尚未生成，也绝不判定为陈旧锁
-            created_ts = info.get("created_ts")
-            recent = (time.time() - float(created_ts)) < 30.0 if created_ts else False
+            # 启动宽限期保护：锁创建不足 30 秒时，即使 status.json 尚未生成，也绝不判定为陈旧锁
+            try:
+                recent = (time.time() - float(info["created_ts"])) < WRITE_LOCK_GRACE_SECONDS
+            except (KeyError, TypeError, ValueError):
+                recent = age < WRITE_LOCK_GRACE_SECONDS
 
             if st.get("state") in TERMINAL or (not alive and not recent):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+                _reclaim_write_lock(p, other, lock_st.st_ino, guard.locked)
                 continue
-            return "这个项目里已经有一个可写调用在运行（%s）。等它结束后再试，可用 peer status 查看。" % other
+            return busy % other
     return "无法获取可写锁：%s" % p
+
+
+def release_write_lock(root, run_id):
+    """只释放属于 run_id 的写锁，杜绝误删并发新进程的锁。"""
+    p = write_lock_path(root)
+    lock = read_json(p, {}) or {}
+    if isinstance(lock, dict) and lock.get("run_id") == run_id:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def stop_lock_paths_for(agent=None):
@@ -1146,10 +1298,7 @@ def cmd_ask(a, env=None):
         try:
             m = snapshot(root, os.path.join(rdir, "snapshot"))
         except PeerError as e:
-            try:
-                os.remove(write_lock_path(root))
-            except OSError:
-                pass
+            release_write_lock(root, run_id)
             shutil.rmtree(rdir, ignore_errors=True)
             die(str(e))
         snap_info = {"files": len(m["entries"]), "copied_bytes": m["copied_bytes"], "not_copied": m["not_copied"]}
@@ -1488,12 +1637,7 @@ def cmd_run(run_dir):
             banner = "> [!CAUTION]\n> **【生图排他锁获取失败】** %s\n\n为防止并发风控，已安全放弃本次执行。\n" % msg
             with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
                 f.write(banner)
-            try:
-                lock = read_json(write_lock_path(meta["root"]), {}) or {}
-                if lock.get("run_id") == meta["run_id"]:
-                    os.remove(write_lock_path(meta["root"]))
-            except OSError:
-                pass
+            release_write_lock(meta["root"], meta["run_id"])
             return
 
         # 拿到锁并休眠冷却结束后，在启动子进程前严格复查 STOP 熔断锁
@@ -1508,18 +1652,14 @@ def cmd_run(run_dir):
             banner = "> [!CAUTION]\n> **【安全熔断停机已触发】** 检测到严重鉴权异常或封禁风险，已启动停机保护阻止调用（%s）！请人工排查确认安全后由用户本人删除停机锁恢复（严禁 Agent 自动删除）。\n\n" % stop_p
             with open(os.path.join(run_dir, "response.md"), "w", encoding="utf-8") as f:
                 f.write(banner + msg + "\n")
-            try:
-                lock = read_json(write_lock_path(meta["root"]), {}) or {}
-                if lock.get("run_id") == meta["run_id"]:
-                    os.remove(write_lock_path(meta["root"]))
-            except OSError:
-                pass
+            release_write_lock(meta["root"], meta["run_id"])
             return
 
     info = {"ok": False, "error": "", "answer": "", "models": [], "usage": {}, "warnings": []}
     changes_md = ""
     triggered_cb = False
     stalled = False
+    pumps = []
 
     try:
         try:
@@ -1557,17 +1697,28 @@ def cmd_run(run_dir):
                     state, stalled = "failed", True
                 else:
                     continue
-                try:
-                    terminate_child(child, 5)
-                except Exception:
-                    pass
                 break
-            for th in pumps:
-                th.join(30)
         except Exception as e:
             with open(err_path, "a", encoding="utf-8") as fe:
                 fe.write("\n[peer] 启动失败：%s\n" % e)
             state = "failed"
+        finally:
+            # 统一收尾顺序：先销毁进程组 → 再 join 管道线程 → 再比对快照 → 最后释放写锁。
+            # 正常退出也要清理：直接子进程退出后，留在组内的后台孙进程仍可能改文件或占着管道。
+            if child is not None:
+                try:
+                    terminate_child(child, 5 if child.poll() is None else 1)
+                except Exception:
+                    pass
+            for th in pumps:
+                th.join(30)
+            if child is not None and not any(th.is_alive() for th in pumps):
+                for stream in (child.stdout, child.stderr):
+                    try:
+                        if stream:
+                            stream.close()
+                    except Exception:
+                        pass
 
         if meta["agent"] == "claude":
             info = parse_claude(out_path)
@@ -1599,12 +1750,6 @@ def cmd_run(run_dir):
                     f.write(c["diff"])
             except Exception as e:
                 changes_md = "## 改动清单\n\n生成改动清单失败：%s\n" % e
-            try:
-                lock = read_json(write_lock_path(meta["root"]), {}) or {}
-                if lock.get("run_id") == meta["run_id"]:
-                    os.remove(write_lock_path(meta["root"]))
-            except OSError:
-                pass
 
         # 深度致命鉴权/封号熔断扫描：分级精准处理
         pat, snippet, err_cat = scan_fatal_auth_error(err_path, info.get("error"), state=state, exit_code=code)
@@ -1625,6 +1770,9 @@ def cmd_run(run_dir):
             except Exception:
                 pass
             image_lock_ctx = None
+        # 写锁最后释放；放在 finally 中，信号退出或意外异常也不会遗留本次的锁
+        if meta.get("mode") == "write":
+            release_write_lock(meta["root"], meta["run_id"])
 
     ended = now()
     dur = int((ended - started).total_seconds())

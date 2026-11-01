@@ -48,10 +48,10 @@ PeerAgent's moat lies in **encapsulating model interactions within a hardened de
 | **Core Role** | **Multi-Agent Safety Governance & Peer Review** | One-way dispatch plugin | MCP-based model consulting | HTTP/FastAPI companion server |
 | **Topology** | **Claude ↔ Codex ↔ Antigravity bidirectional loop** | Codex → Claude one-way | Host → multi-model star hub | Client ↔ companion service API |
 | **Silent Billing Lock (`approved_auth`)** | ✅ **Pre-flight verification, blocks surprise API charges** | ❌ No check, vulnerable to env leakage | ❌ Relies on client configuration | ❌ Relies on custom auth setup |
-| **Account Ban Circuit Breaker (`STOP`)** | ✅ **Millisecond ban detection, halts concurrent retries** | ❌ Process exits with error; no locking | ❌ No circuit breaker protection | ❌ None |
+| **Account Ban Circuit Breaker (`STOP`)** | ✅ **Process-group signal handling + STOP circuit breaker: scans for fatal ban signatures after the child exits and writes a STOP lock that blocks further runs** | ❌ Process exits with error; no locking | ❌ No circuit breaker protection | ❌ None |
 | **Pre-Write Snapshots & Unified Diff** | ✅ **Automatic pre-write snapshot + post-run Unified Diff** | ❌ No pre-write snapshot; manual git diff | ❌ Up to host client implementation | ❌ None |
 | **Architecture Decision Freeze (`peer freeze`)** | ✅ **SHA-256 fingerprint + standalone handover prompt** | ❌ None | ❌ None | ❌ None |
-| **Adversarial / Anti-Sycophancy Protocol** | ✅ **History inference scrubbing + evidence-first prompt** | ❌ Carries prior history; prone to bias | ❌ Dependent on prompt authoring | ❌ No standardized protocol |
+| **Adversarial / Anti-Sycophancy Protocol** | ✅ **Tool allow-list limits + prompt rules: read-only tool list, instructions not to rely on prior replies, evidence first (not OS-level isolation)** | ❌ Carries prior history; prone to bias | ❌ Dependent on prompt authoring | ❌ No standardized protocol |
 | **Runtime & Dependencies** | **Single-file CLI using Python standard library, 0 pip dependencies** | Tied to Codex plugin runtime | Requires Node.js / MCP runtime | Requires FastAPI / pip packages |
 
 ## Install and try it
@@ -228,7 +228,7 @@ Snapshots skip directories such as `.git`, `node_modules`, and `.peer-review`. T
 
 ### Core safety locks and tools: silent billing prevention & fatal ban circuit breaker
 
-When running multi-agent workflows autonomously, developers face two major risks: **"silently falling back from a flat subscription to pay-per-token API keys, resulting in surprise bills"** and **"automated loops repeatedly hitting fatal authentication errors or platform bans, triggering cascading account suspensions"**. PeerAgent enforces two hard physical guardrails with dedicated inspection tools:
+When running multi-agent workflows autonomously, developers face two major risks: **"silently falling back from a flat subscription to pay-per-token API keys, resulting in surprise bills"** and **"automated loops repeatedly hitting fatal authentication errors or platform bans, triggering cascading account suspensions"**. PeerAgent enforces two pre-flight guardrails with dedicated inspection tools:
 
 #### 1. `approved_auth` Authentication Mode Lock (Silent Billing Prevention)
 
@@ -240,10 +240,10 @@ When running multi-agent workflows autonomously, developers face two major risks
 
 #### 2. `STOP` Fatal Ban Circuit Breaker & Emergency Killswitch
 
-* **Interception mechanism**: PeerAgent performs deep scanning on CLI error streams for fatal account ban signatures (including `account deactivated/suspended/banned`, `organization_disabled`, and `unsupported_country`). Upon detection, it instantly writes a physical lock file into `$PEER_HOME` (`STOP-codex`, `STOP-claude`, or global `STOP`) recording the timestamp, reason, and run ID.
-* **Why it prevents cascading account bans**: In autonomous or batch runs, repeated attempts against an already flagged or blocked account often trigger permanent platform bans across all associated credentials. The STOP lock physically blocks all future runs at the pre-flight gate. Routine 401 token expirations or transient network timeouts do not trigger the STOP lock.
+* **Interception mechanism**: After the child CLI exits and its output has been collected, PeerAgent scans the error stream for fatal account ban signatures (including `account deactivated/suspended/banned`, `organization_disabled`, and `unsupported_country`). On a match, it immediately writes a STOP lock file into `$PEER_HOME` (`STOP-codex`, `STOP-claude`, or global `STOP`) recording the timestamp, reason, and run ID.
+* **Why it prevents cascading account bans**: In autonomous or batch runs, repeated attempts against an already flagged or blocked account often trigger permanent platform bans across all associated credentials. The STOP lock blocks all future runs at the pre-flight gate. Routine 401 token expirations or transient network timeouts do not trigger the STOP lock.
 * **Emergency killswitch & manual reset protocol (safety redline)**:
-  * **Manual killswitch**: Users can pull the physical emergency brake at any time by running `touch ~/.peer-review/STOP`.
+  * **Manual killswitch**: Users can pull the emergency brake at any time by running `touch ~/.peer-review/STOP`.
   * **AI reset strictly forbidden**: While a STOP lock is active, `peer` rejects all calls with exit code 3. **AI agents are strictly prohibited from deleting STOP files**. A human user must investigate the root cause, verify account security, and manually remove the lock file in a terminal (e.g., `rm ~/.peer-review/STOP*`) to restore service.
   * **Diagnostic tool `peer doctor`**: When a circuit breaker is triggered, `peer doctor` highlights the exact lock path, trigger reason, and timestamp in red alerts, exiting with code 3 to stop automated harnesses.
 

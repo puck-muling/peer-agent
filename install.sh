@@ -136,22 +136,25 @@ path_within() {
 
 is_peer_owned() {
   # 判断 $2 是否由本工具安装（$1 为对应安装源）：
-  #   软链接：指向与安装源完全一致，或指向本仓库 / PEER_HOME 之内
+  #   软链接：规范化后的指向与安装源一致，或位于本仓库 / PEER_HOME 之内（先规范化，防止 repo/../x 绕过前缀判断）
   #   普通文件：内容与安装源一致，或带有 PEER_MARKER 标记
   local src="$1"
   local dst="$2"
   if [ -L "$dst" ]; then
-    local target
+    local target src_c root_c
     target="$(readlink "$dst" || true)"
     [ -n "$target" ] || return 1
     case "$target" in
       /*) ;;
       *) target="$(dirname "$dst")/$target" ;;
     esac
-    [ "$target" = "$src" ] && return 0
+    target="$(canon_path "$target")" || return 1
+    src_c="$(canon_path "$src")" || return 1
+    [ "$target" = "$src_c" ] && return 0
     local root
-    for root in "$SCRIPT_DIR" "$(cd "$SCRIPT_DIR" && pwd -P)" "$PEER_HOME"; do
-      path_within "$target" "$root" && return 0
+    for root in "$SCRIPT_DIR" "$PEER_HOME"; do
+      root_c="$(canon_path "$root/_")" || continue
+      path_within "$target" "$(dirname "$root_c")" && return 0
     done
     return 1
   elif [ -f "$dst" ]; then
@@ -161,38 +164,58 @@ is_peer_owned() {
   return 1
 }
 
-safe_uninstall_skill() {
+backup_path() {
+  local bak="${1}.bak_$(date +%Y%m%d%H%M%S)"
+  if [ -e "$bak" ] || [ -L "$bak" ]; then
+    bak="${bak}_$$"
+  fi
+  printf '%s\n' "$bak"
+}
+
+restore_original_backup() {
+  # 只还原安装前的原始用户文件：跳过旧版 PeerAgent 自身的备份（带标记、内容一致或指向本仓库），取时间戳最新的一份
   local src="$1"
   local dst="$2"
+  local b pick=""
+  for b in "$dst".bak_*; do
+    { [ -e "$b" ] || [ -L "$b" ]; } || continue
+    if is_peer_owned "$src" "$b"; then
+      continue
+    fi
+    pick="$b"
+  done
+  if [ -n "$pick" ]; then
+    echo "   还原安装前的原有文件: $(basename "$pick") -> $(basename "$dst")"
+    mv "$pick" "$dst"
+  fi
+}
+
+safe_uninstall_file() {
+  # $3=1 时删除后顺带移除已空的父目录（技能目录）；执行程序所在的 bin 目录不动
+  local src="$1"
+  local dst="$2"
+  local prune="${3:-1}"
+  local label="${4:-技能}"
 
   if is_peer_owned "$src" "$dst"; then
     rm -f "$dst"
-    local parent
-    parent="$(dirname "$dst")"
-    local base
-    base="$(basename "$dst")"
-    local latest_bak
-    latest_bak="$(ls -t "${parent}/${base}".bak_* 2>/dev/null | head -n 1 || true)"
-    if [ -n "$latest_bak" ] && { [ -f "$latest_bak" ] || [ -L "$latest_bak" ]; }; then
-      echo "   还原备份技能: $(basename "$latest_bak") -> $base"
-      mv "$latest_bak" "$dst"
+    restore_original_backup "$src" "$dst"
+    if [ "$prune" = "1" ]; then
+      rmdir "$(dirname "$dst")" 2>/dev/null || true
     fi
-    rmdir "$(dirname "$dst")" 2>/dev/null || true
   elif [ -e "$dst" ] || [ -L "$dst" ]; then
-    echo "   ⚠️ 跳过非 PeerAgent 安装的技能文件（未删除）: $dst"
+    echo "   ⚠️ 跳过非 PeerAgent 安装的${label}文件（未删除）: $dst"
   fi
+}
+
+safe_uninstall_skill() {
+  safe_uninstall_file "$1" "$2" 1 "技能"
 }
 
 uninstall_peer() {
   echo "正在卸载 PeerAgent..."
-  if is_peer_owned "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"; then
-    rm -f "$LOCAL_BIN/peer"
-  elif [ -e "$LOCAL_BIN/peer" ] || [ -L "$LOCAL_BIN/peer" ]; then
-    echo "   ⚠️ 跳过非 PeerAgent 安装的执行程序（未删除）: $LOCAL_BIN/peer"
-  fi
-  if [ -L "$PEER_HOME/bin/peer" ] || [ -f "$PEER_HOME/bin/peer" ]; then
-    rm -f "$PEER_HOME/bin/peer"
-  fi
+  safe_uninstall_file "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer" 0 "执行程序"
+  safe_uninstall_file "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer" 0 "执行程序"
   safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
   safe_uninstall_skill "$SCRIPT_DIR/skills/antigravity/claude/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md"
   safe_uninstall_skill "$SCRIPT_DIR/skills/claude/codex/SKILL.md" "$HOME/.claude/skills/codex/SKILL.md"
@@ -225,67 +248,112 @@ check_install_dir() {
   fi
 }
 
+check_install_target() {
+  # 最终目标文件不能被真实目录占用，否则 mv / ln 会把文件放进该目录而非替换它
+  if [ -d "$1" ] && [ ! -L "$1" ]; then
+    echo "❌ 错误: 安装目标文件被目录占用，已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "   冲突路径: $1（是目录）" >&2
+    echo "👉 请人工确认该路径用途，移走或改名后重试。" >&2
+    exit 1
+  fi
+}
+
 preflight_install_dirs() {
-  # 任何写入之前一次性检查全部目标目录，避免装到一半才失败、留下半套技能
-  local d
-  for d in "$PEER_HOME" "$LOCAL_BIN" \
+  # 任何写入之前一次性检查全部目标目录与目标文件，避免装到一半才失败、留下半套技能
+  # check_install_dir 会逐级回溯到最近的已存在上级，父目录随之一并校验
+  local d f
+  for d in "$PEER_HOME" "$PEER_HOME/bin" "$PEER_HOME/templates" "$PEER_HOME/logs" "$LOCAL_BIN" \
            "$HOME/.gemini/config/skills/codex" "$HOME/.gemini/config/skills/claude" \
            "$HOME/.claude/skills/codex"; do
     check_install_dir "$d"
   done
   for d in "${CODEX_SKILL_DIRS[@]}"; do
     check_install_dir "$d/claude"
+    check_install_target "$d/claude/SKILL.md"
+  done
+  for f in "$PEER_HOME/bin/peer" "$LOCAL_BIN/peer" \
+           "$HOME/.gemini/config/skills/codex/SKILL.md" "$HOME/.gemini/config/skills/claude/SKILL.md" \
+           "$HOME/.claude/skills/codex/SKILL.md"; do
+    check_install_target "$f"
+  done
+  for f in "$SCRIPT_DIR/templates"/*.md; do
+    check_install_target "$PEER_HOME/templates/$(basename "$f")"
   done
 }
 
-safe_install_skill() {
+install_file() {
+  # 统一安装执行程序与技能：
+  #   已归属本工具（is_peer_owned：指向本仓库的软链、内容一致或带 PEER_MARKER 的旧版本）直接替换，不产生备份；
+  #   外来文件（第三方同名工具或用户自己的技能）先 mv 备份为 .bak_<时间戳>，绝不直接覆盖，卸载时还原。
+  #   复制模式先写同目录临时文件，再 mv -f 原子替换。
   local src="$1"
   local dst="$2"
+  local label="$3"
+  local exe="${4:-0}"
   mkdir -p "$(dirname "$dst")"
-  local bak="${dst}.bak_$(date +%Y%m%d%H%M%S)"
-  if [ -e "$bak" ] || [ -L "$bak" ]; then
-    bak="${bak}_$$"
-  fi
-  local backed_up=0
-  if [ -L "$dst" ]; then
-    local target
-    target="$(readlink "$dst" || true)"
-    if [ "$target" = "$src" ]; then
-      # 上次 --link 安装留下的本仓库链接，直接替换
-      rm -f "$dst"
+  local bak=""
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
+    if is_peer_owned "$src" "$dst"; then
+      if [ -L "$dst" ]; then
+        # 本仓库的旧软链接先移除：复制模式下绝不能透过链接写回仓库源文件
+        rm -f "$dst"
+      fi
     else
-      # 外来软链接：连同原指向一起备份（mv 不解引用，只移动链接本身），卸载时可还原
+      bak="$(backup_path "$dst")"
       mv "$dst" "$bak"
-      backed_up=1
-      echo "      检测到已有技能软链接（原指向: $target），已备份至: $bak"
-    fi
-  elif [ -e "$dst" ]; then
-    if ! cmp -s "$src" "$dst" 2>/dev/null; then
-      mv "$dst" "$bak"
-      backed_up=1
-      echo "      检测到已有技能文件，已备份至: $bak"
+      if [ -L "$bak" ]; then
+        # mv 不解引用，只移动链接本身，原指向随备份一起保留
+        echo "      检测到已有${label}软链接（原指向: $(readlink "$bak" || true)），已备份至: $bak"
+      else
+        echo "      检测到已有${label}文件，已备份至: $bak"
+      fi
     fi
   fi
   local ok=1
+  local tmp="${dst}.tmp.$$"
   if [ "$MODE" = "link" ]; then
     ln -sf "$src" "$dst" || ok=0
   else
-    cp -f "$src" "$dst" || ok=0
+    rm -f "$tmp"
+    if cp "$src" "$tmp" && { [ "$exe" = "0" ] || chmod +x "$tmp"; } && mv -f "$tmp" "$dst"; then
+      :
+    else
+      ok=0
+    fi
   fi
   if [ "$ok" = "0" ]; then
-    rm -f "$dst" 2>/dev/null || true
-    echo "❌ 错误: 技能写入失败，已安全终止。" >&2
+    rm -f "$tmp" 2>/dev/null || true
+    echo "❌ 错误: ${label}写入失败，已安全终止。" >&2
     echo "   源文件: $src" >&2
     echo "   目标:   $dst" >&2
-    if [ "$backed_up" = "1" ]; then
-      if mv "$bak" "$dst"; then
-        echo "   已还原原有技能文件: $dst" >&2
+    if [ -n "$bak" ]; then
+      if [ ! -e "$dst" ] && [ ! -L "$dst" ] && mv "$bak" "$dst"; then
+        echo "   已还原原有${label}文件: $dst" >&2
       else
-        echo "   ⚠️ 原有技能文件还原失败，备份仍保留在: $bak" >&2
+        echo "   ⚠️ 原有${label}文件还原失败，备份仍保留在: $bak" >&2
       fi
     fi
     echo "👉 请检查目标目录的权限与剩余空间后重试。" >&2
     exit 1
+  fi
+}
+
+safe_install_skill() {
+  install_file "$1" "$2" "技能"
+}
+
+install_template() {
+  # 模板目录 $PEER_HOME/templates 归本工具所有，直接替换；复制模式同样走临时文件 + mv -f
+  local src="$1"
+  local dst="$2"
+  if [ "$MODE" = "link" ]; then
+    ln -sf "$src" "$dst"
+  else
+    if [ -L "$dst" ]; then
+      rm -f "$dst"
+    fi
+    cp "$src" "${dst}.tmp.$$"
+    mv -f "${dst}.tmp.$$" "$dst"
   fi
 }
 
@@ -349,24 +417,15 @@ echo "==> 2. 初始化目标目录与核心组件..."
 preflight_install_dirs
 mkdir -p "$PEER_HOME/bin" "$PEER_HOME/templates" "$PEER_HOME/logs" "$LOCAL_BIN"
 
+# 两种模式统一先判断归属：外来的同名 peer 先备份再安装，绝不直接覆盖
+install_file "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer" "执行程序" 1
+install_file "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer" "执行程序" 1
+for f in "$SCRIPT_DIR/templates"/*.md; do
+  install_template "$f" "$PEER_HOME/templates/$(basename "$f")"
+done
 if [ "$MODE" = "link" ]; then
-  ln -sf "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer"
-  ln -sf "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"
-  for f in "$SCRIPT_DIR/templates"/*.md; do
-    ln -sf "$f" "$PEER_HOME/templates/$(basename "$f")"
-  done
   echo "   已以符号链接模式安装核心工具。"
 else
-  rm -f "$PEER_HOME/bin/peer"
-  cp -f "$SCRIPT_DIR/bin/peer" "$PEER_HOME/bin/peer"
-  chmod +x "$PEER_HOME/bin/peer"
-  rm -f "$LOCAL_BIN/peer"
-  cp -f "$SCRIPT_DIR/bin/peer" "$LOCAL_BIN/peer"
-  chmod +x "$LOCAL_BIN/peer"
-  for f in "$SCRIPT_DIR/templates"/*.md; do
-    rm -f "$PEER_HOME/templates/$(basename "$f")"
-    cp -f "$f" "$PEER_HOME/templates/"
-  done
   echo "   已复制核心二进制与审阅模板。"
 fi
 

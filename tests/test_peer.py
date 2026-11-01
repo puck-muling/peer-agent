@@ -452,28 +452,95 @@ class TestPeerExtended(unittest.TestCase):
                 else:
                     self.assertIn("brew install python", res.stderr)
 
-    def test_claude_skill_bash_evaluation(self):
-        """普通请求中的命令替换在真实 Bash 落盘时保持字面量。"""
-        skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
-        self.assertTrue(os.path.exists(skill_file))
-        with open(skill_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        # Claude Code 会在执行前把 $ARGUMENTS 做文本替换，所以必须用带引号的 heredoc 原样落盘，不能再包进双引号里求值
-        self.assertNotIn("printf '# 任务\\n%s\\n' \"$ARGUMENTS\"", content)
-        self.assertIn("<<'PEER_ARGUMENTS_EOF_7f3a9c'", content)
+    SKILL_HOSTILE_INPUTS = [
+        # 多行：旧版注释行里的 $ARGUMENTS 被替换后，第二行起会逃逸成裸露命令
+        "审阅下\ntouch {marker}",
+        # 多行带括号：旧版会直接 syntax error near unexpected token '('
+        "检查以下几点：\n1. 锁(竞争)\n2. 收尾(进程组) && touch {marker}",
+        # 含旧版固定分隔符：旧版 heredoc 会被提前闭合
+        "审阅\nPEER_ARGUMENTS_EOF_7f3a9c\ntouch {marker}\nPEER_ARGUMENTS_EOF_7f3a9c",
+        # 命令替换、变量与各类引号
+        "审阅 `touch {marker}` $(touch {marker}) $HOME \"q\" 'r'",
+        # 代码围栏、heredoc 关键字与孤立引号
+        "审阅\n```\nEOF\n' \" ) ; touch {marker}\n```",
+    ]
 
-        # 取出 SKILL.md 中真实的落盘片段，模拟 Claude Code 的文本替换后在 Bash 中执行
-        start = content.index("   REQ_DIR=")
-        end = content.index("   # 5. 安全提取意图")
-        snippet = "\n".join(l[3:] if l.startswith("   ") else l for l in content[start:end].splitlines())
-        marker = os.path.join(self.test_dir, "injected")
-        hostile = "审阅 `touch %s` $(touch %s) $HOME \"q\" 'r'" % (marker, marker)
-        script = "set -e\ncd \"$1\"\n" + snippet.replace("$ARGUMENTS", hostile) + "\ncat \"$REQ_FILE\"\n"
-        workdir = self.test_dir
-        res = subprocess.run(["bash", "-c", script, "bash", workdir], capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn(hostile, res.stdout)
-        self.assertFalse(os.path.exists(marker), "用户参数中的命令替换被意外执行")
+    @staticmethod
+    def skill_bash_blocks(content):
+        """取出 SKILL.md 中全部 bash 代码块（去掉列表缩进）。"""
+        blocks = re.findall(r"^   ```bash\n(.*?)\n   ```$", content, re.S | re.M)
+        return ["\n".join(l[3:] if l.startswith("   ") else l for l in b.splitlines()) for b in blocks]
+
+    def test_skill_arguments_never_inside_shell_code(self):
+        """所有 SKILL.md 的代码块内都不得出现 $ARGUMENTS，也不再使用固定 heredoc 分隔符。"""
+        for agent, target in (("antigravity", "claude"), ("antigravity", "codex"),
+                              ("claude", "codex"), ("codex", "claude")):
+            with self.subTest(skill="%s/%s" % (agent, target)):
+                with open(os.path.join(REPO_DIR, "skills", agent, target, "SKILL.md"), encoding="utf-8") as f:
+                    content = f.read()
+                self.assertNotIn("PEER_ARGUMENTS_EOF", content)
+                for block in re.findall(r"```.*?```", content, re.S):
+                    self.assertNotIn("$ARGUMENTS", block)
+
+    def test_claude_skill_full_text_substitution_is_injection_safe(self):
+        """模拟 Claude Code 对整份 SKILL.md 做 $ARGUMENTS 文本替换：bash 语法必须通过、不执行任何注入，且意图解析正确。"""
+        skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
+        with open(skill_file, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("  - Write", content.split("---")[1], "落盘依赖 Write 工具，必须在 allowed-tools 中声明")
+
+        stub_bin = os.path.join(self.test_dir, "stubbin")
+        os.makedirs(stub_bin)
+        os.symlink(sys.executable, os.path.join(stub_bin, "python3"))
+        stub_log = os.path.join(self.test_dir, "peer-calls.log")
+        with open(os.path.join(stub_bin, "peer"), "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$@" >> "$PEER_STUB_LOG"\n'
+                    '[ "$1" = ask ] && echo "运行编号：RUN-1"\nexit 0\n')
+        os.chmod(os.path.join(stub_bin, "peer"), 0o755)
+        env = {"HOME": self.test_dir, "PEER_HOME": os.path.join(self.test_dir, "peer-home"),
+               "PATH": stub_bin + ":/usr/bin:/bin", "PEER_STUB_LOG": stub_log}
+
+        for i, template in enumerate(self.SKILL_HOSTILE_INPUTS):
+            marker = os.path.join(self.test_dir, "pwned-%d" % i)
+            hostile = template.format(marker=marker)
+            with self.subTest(case=i):
+                blocks = self.skill_bash_blocks(content.replace("$ARGUMENTS", hostile))
+                self.assertEqual(len(blocks), 2)
+                for block in blocks:
+                    res = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
+                    self.assertEqual(res.returncode, 0, res.stderr)
+
+                workdir = os.path.join(self.test_dir, "proj-%d" % i)
+                os.makedirs(workdir)
+                res = subprocess.run(["bash", "-c", blocks[0]], cwd=workdir, env=env,
+                                     capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                req_file = re.search(r"^REQ_FILE=(.*)$", res.stdout, re.M).group(1)
+                self.assertFalse(os.path.exists(req_file), "第一步只生成路径，不得创建文件")
+                # 模拟第二步 Write 工具：参数原文经工具参数落盘，不经过任何 Shell
+                with open(req_file, "w", encoding="utf-8") as f:
+                    f.write("# 任务\n" + hostile + "\n")
+
+                if os.path.exists(stub_log):
+                    os.remove(stub_log)
+                step3 = blocks[1].replace("__REQ_FILE__", req_file, 1)
+                res = subprocess.run(["bash", "-c", step3], cwd=workdir, env=env,
+                                     capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                self.assertFalse(os.path.exists(marker), "用户参数被当成 Shell 命令执行")
+                with open(req_file, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), "# 任务\n" + hostile + "\n")
+                with open(stub_log, encoding="utf-8") as f:
+                    calls = f.read().splitlines()
+                self.assertEqual(calls[:3], ["ask", "codex", "review"])
+                self.assertIn(req_file, calls)
+                self.assertIn("RUN-1", calls)  # wait 只针对 ask 返回的运行编号
+
+        # 未替换占位符或路径不符时必须拒绝运行
+        res = subprocess.run(["bash", "-c", self.skill_bash_blocks(content)[1]], cwd=self.test_dir, env=env,
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 5)
+        self.assertIn("REQ_FILE", res.stderr)
 
     def test_claude_skill_routing_review_verbs_beat_edit_words(self):
         """审阅类动词必须优先于修改类词，避免“审阅当前修改”被误升级为 exec"""
@@ -877,7 +944,7 @@ class TestHardeningFixes(unittest.TestCase):
         fake_cp = os.path.join(tool_bin, "cp")
         with open(fake_cp, "w", encoding="utf-8") as f:
             f.write('#!/bin/sh\nfor a; do last="$a"; done\n'
-                    'case "$last" in */.claude/skills/codex/SKILL.md) echo "cp: simulated failure" >&2; exit 1 ;; esac\n'
+                    'case "$last" in */.claude/skills/codex/SKILL.md*) echo "cp: simulated failure" >&2; exit 1 ;; esac\n'
                     'exec /bin/cp "$@"\n')
         os.chmod(fake_cp, 0o755)
 
@@ -983,6 +1050,355 @@ class TestHardeningFixes(unittest.TestCase):
         for dst in dsts:
             with self.subTest(dst=dst):
                 self.assertFalse(os.path.exists(dst))
+
+    def test_installer_backs_up_foreign_local_peer_and_restores_on_uninstall(self):
+        """$LOCAL_BIN/peer 若是第三方同名工具：两种模式安装时都先备份，卸载时还原保留。"""
+        for mode in ("--copy", "--link"):
+            with self.subTest(mode=mode):
+                repo = self.make_repo()
+                home = os.path.join(self.test_dir, "home")
+                foreign = "#!/bin/sh\necho third-party peer\n"
+                local_peer = os.path.join(home, ".local", "bin", "peer")
+                home_peer = os.path.join(home, ".peer-review", "bin", "peer")
+                for path in (local_peer, home_peer):
+                    os.makedirs(os.path.dirname(path))
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(foreign)
+
+                res, _ = self.run_installer(repo, mode)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                for path in (local_peer, home_peer):
+                    baks = [n for n in os.listdir(os.path.dirname(path)) if n.startswith("peer.bak_")]
+                    self.assertEqual(len(baks), 1, os.listdir(os.path.dirname(path)))
+                    with open(os.path.join(os.path.dirname(path), baks[0]), encoding="utf-8") as f:
+                        self.assertEqual(f.read(), foreign)
+                    self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if ".tmp." in n], [])
+                with open(local_peer, encoding="utf-8") as f:
+                    self.assertIn("doctor-stub", f.read())
+                self.assertTrue(os.access(local_peer, os.X_OK))
+
+                res, _ = self.run_installer(repo, "--uninstall")
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                for path in (local_peer, home_peer):
+                    self.assertFalse(os.path.islink(path))
+                    with open(path, encoding="utf-8") as f:
+                        self.assertEqual(f.read(), foreign)
+                    self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if ".bak_" in n], [])
+                shutil.rmtree(repo)
+                shutil.rmtree(home)
+
+    def test_installer_copy_over_previous_link_never_writes_through_to_repo(self):
+        """先 --link 再 --copy：必须替换链接本身，不能透过链接改写仓库源文件，也不产生备份。"""
+        repo = self.make_repo()
+        src = os.path.join(repo, "bin", "peer")
+        with open(src, encoding="utf-8") as f:
+            before = f.read()
+        res, home = self.run_installer(repo, "--link")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        res, _ = self.run_installer(repo, "--copy")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        local_peer = os.path.join(home, ".local", "bin", "peer")
+        self.assertFalse(os.path.islink(local_peer))
+        self.assertFalse(os.path.islink(src))
+        with open(src, encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)
+        for d in (os.path.dirname(local_peer), os.path.join(home, ".claude", "skills", "codex")):
+            self.assertEqual([n for n in os.listdir(d) if ".bak_" in n or ".tmp." in n], [])
+
+    def test_installer_upgrade_replaces_managed_skill_without_backup(self):
+        """升级：已带 managed-by 标记的旧版技能直接替换，不产生 .bak；卸载只还原原始用户备份。"""
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        dst = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+        os.makedirs(os.path.dirname(dst))
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write("user original skill\n")
+        res, _ = self.run_installer(repo)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        skill_dir = os.path.dirname(dst)
+        self.assertEqual(len([n for n in os.listdir(skill_dir) if ".bak_" in n]), 1)
+
+        # 模拟已安装的是旧版 PeerAgent 技能（内容不同但带标记），再次安装
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write("---\nname: codex\n---\n<!-- managed-by: peer-agent -->\nolder version\n")
+        res, _ = self.run_installer(repo)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(len([n for n in os.listdir(skill_dir) if ".bak_" in n]), 1)
+        # 历史版本遗留的受管理备份（时间戳更新）不得被当成原始文件还原
+        legacy = dst + ".bak_29991231235959"
+        with open(legacy, "w", encoding="utf-8") as f:
+            f.write("<!-- managed-by: peer-agent -->\nlegacy managed backup\n")
+
+        res, _ = self.run_installer(repo, "--uninstall")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        with open(dst, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "user original skill\n")
+        self.assertTrue(os.path.exists(legacy), "受管理的旧备份只是不还原，不做删除")
+
+    def test_installer_uninstall_canonicalizes_symlink_target(self):
+        """软链接指向 repo/../thirdparty 时，规范化后不在仓库内，卸载必须保留。"""
+        repo = self.make_repo()
+        home = os.path.join(self.test_dir, "home")
+        third = os.path.join(self.test_dir, "thirdparty", "SKILL.md")
+        os.makedirs(os.path.dirname(third))
+        with open(third, "w", encoding="utf-8") as f:
+            f.write("third-party skill\n")
+        dst = os.path.join(home, ".claude", "skills", "codex", "SKILL.md")
+        os.makedirs(os.path.dirname(dst))
+        sneaky = os.path.join(repo, "..", "thirdparty", "SKILL.md")
+        os.symlink(sneaky, dst)
+        res, _ = self.run_installer(repo, "--uninstall")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertTrue(os.path.islink(dst))
+        self.assertEqual(os.readlink(dst), sneaky)
+        self.assertIn("跳过", res.stdout)
+
+    def test_installer_preflight_checks_peer_home_subdirs_and_targets(self):
+        """$PEER_HOME/bin 被文件占用、或目标文件被目录占用时，写入前就终止。"""
+        cases = {
+            "bin-is-file": (os.path.join(".peer-review", "bin"), "file", "不是目录"),
+            "templates-is-file": (os.path.join(".peer-review", "templates"), "file", "不是目录"),
+            "target-is-dir": (os.path.join(".local", "bin", "peer"), "dir", "是目录"),
+        }
+        for name, (rel, kind, msg) in cases.items():
+            with self.subTest(case=name):
+                repo = self.make_repo()
+                home = os.path.join(self.test_dir, "home")
+                path = os.path.join(home, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if kind == "file":
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write("occupied\n")
+                else:
+                    os.makedirs(path)
+                res, _ = self.run_installer(repo)
+                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+                self.assertIn(msg, res.stderr)
+                self.assertFalse(os.path.exists(os.path.join(home, ".claude")))
+                self.assertFalse(os.path.exists(os.path.join(home, ".peer-review", "config.json")))
+                shutil.rmtree(repo)
+                shutil.rmtree(home)
+
+
+class TestWriteLockAndLifecycle(unittest.TestCase):
+    """可写锁原子发布 / 残缺锁宽限 / 并发互斥，以及调度器收尾顺序。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = os.path.join(tmp.name, "proj")
+        os.makedirs(os.path.join(self.root, ".peer-review", "runs"))
+        self.lock = peer.write_lock_path(self.root)
+
+    def lock_run_id(self):
+        with open(self.lock, encoding="utf-8") as f:
+            return json.load(f)["run_id"]
+
+    def dead_pid(self):
+        p = subprocess.Popen(["true"])
+        p.wait()
+        return p.pid
+
+    def assert_no_leftovers(self):
+        names = os.listdir(os.path.dirname(self.lock))
+        self.assertEqual([n for n in names if ".tmp." in n or ".stale." in n or n.endswith(".reclaim")], [], names)
+
+    def test_lock_file_is_never_empty_after_acquire(self):
+        self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_A"))
+        self.assertEqual(self.lock_run_id(), "RUN_A")
+        self.assertIn("RUN_A", peer.acquire_write_lock(self.root, "RUN_B"))
+        self.assertEqual(self.lock_run_id(), "RUN_A")
+        self.assert_no_leftovers()
+
+    def test_fresh_empty_or_corrupt_lock_gets_grace_period(self):
+        """空文件 / 残缺 JSON 可能正被写入：30 秒内绝不判死亡、绝不删除。"""
+        for content in ("", "{\"run_id\": \"RUN_A\", \"pi"):
+            with self.subTest(content=content):
+                with open(self.lock, "w", encoding="utf-8") as f:
+                    f.write(content)
+                err = peer.acquire_write_lock(self.root, "RUN_B")
+                self.assertIsNotNone(err)
+                with open(self.lock, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), content)
+                os.remove(self.lock)
+
+    def test_old_empty_lock_is_reclaimed_after_grace(self):
+        with open(self.lock, "w", encoding="utf-8"):
+            pass
+        old = time.time() - peer.WRITE_LOCK_GRACE_SECONDS - 5
+        os.utime(self.lock, (old, old))
+        self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_B"))
+        self.assertEqual(self.lock_run_id(), "RUN_B")
+        self.assert_no_leftovers()
+
+    def test_stale_lock_of_dead_owner_is_reclaimed_but_recent_one_is_kept(self):
+        dead = self.dead_pid()
+        with open(self.lock, "w", encoding="utf-8") as f:
+            json.dump({"run_id": "RUN_OLD", "pid": dead, "created_ts": time.time()}, f)
+        self.assertIsNotNone(peer.acquire_write_lock(self.root, "RUN_B"), "启动宽限期内不得回收")
+        with open(self.lock, "w", encoding="utf-8") as f:
+            json.dump({"run_id": "RUN_OLD", "pid": dead, "created_ts": time.time() - 120}, f)
+        self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_B"))
+        self.assertEqual(self.lock_run_id(), "RUN_B")
+
+    def test_reclaim_puts_back_a_lock_that_changed_after_judgement(self):
+        """判定陈旧之后锁被并发新进程替换：回收时核对 run_id/inode 不符，必须原样放回。"""
+        with open(self.lock, "w", encoding="utf-8") as f:
+            json.dump({"run_id": "RUN_OLD"}, f)
+        old_ino = os.stat(self.lock).st_ino
+        os.remove(self.lock)
+        self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_NEW"))
+        peer._reclaim_write_lock(self.lock, "RUN_OLD", old_ino)
+        self.assertEqual(self.lock_run_id(), "RUN_NEW")
+        self.assert_no_leftovers()
+
+    def test_release_only_removes_own_lock(self):
+        self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_A"))
+        peer.release_write_lock(self.root, "RUN_OTHER")
+        self.assertEqual(self.lock_run_id(), "RUN_A")
+        peer.release_write_lock(self.root, "RUN_A")
+        self.assertFalse(os.path.exists(self.lock))
+
+    def test_fallback_without_hard_links_still_excludes(self):
+        with patch.object(peer.os, "link", side_effect=PermissionError("no hard links")):
+            self.assertIsNone(peer.acquire_write_lock(self.root, "RUN_A"))
+            self.assertEqual(self.lock_run_id(), "RUN_A")
+            self.assertIsNotNone(peer.acquire_write_lock(self.root, "RUN_B"))
+        self.assert_no_leftovers()
+
+    def run_concurrent(self, n, use_guard):
+        import threading
+        barrier = threading.Barrier(n)
+        results = []
+
+        def worker(i):
+            barrier.wait()
+            results.append(peer.acquire_write_lock(self.root, "RUN_%d" % i))
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        ctx = patch.object(peer, "fcntl", None) if not use_guard else patch.object(peer, "fcntl", peer.fcntl)
+        with ctx:
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join(10)
+        return results
+
+    def test_concurrent_acquire_admits_exactly_one(self):
+        """并发抢锁（含残缺陈旧锁待回收的场景）绝不穿透：恰好一个成功，锁归属于成功者。"""
+        for use_guard in (True, False):
+            for preset in ("none", "stale-empty"):
+                with self.subTest(guard=use_guard, preset=preset):
+                    if os.path.exists(self.lock):
+                        os.remove(self.lock)
+                    if preset == "stale-empty":
+                        with open(self.lock, "w", encoding="utf-8"):
+                            pass
+                        old = time.time() - 120
+                        os.utime(self.lock, (old, old))
+                    results = self.run_concurrent(12, use_guard)
+                    winners = [i for i, r in enumerate(results) if r is None]
+                    self.assertEqual(len(winners), 1, results)
+                    self.assertTrue(self.lock_run_id().startswith("RUN_"))
+                    self.assert_no_leftovers()
+
+    def test_concurrent_acquire_across_processes(self):
+        script = ("import sys\nfrom importlib.machinery import SourceFileLoader\n"
+                  "import importlib.util\n"
+                  "l = SourceFileLoader('peer', sys.argv[1]); s = importlib.util.spec_from_loader('peer', l)\n"
+                  "m = importlib.util.module_from_spec(s); l.exec_module(m)\n"
+                  "import time\nwhile time.time() < float(sys.argv[3]): pass\n"
+                  "print('OK' if m.acquire_write_lock(sys.argv[2], 'P%s' % sys.argv[4]) is None else 'BUSY')\n")
+        start_at = str(time.time() + 1.5)
+        procs = [subprocess.Popen([sys.executable, "-c", script, peer_bin_path, self.root, start_at, str(i)],
+                                  stdout=subprocess.PIPE, text=True) for i in range(8)]
+        outs = [p.communicate(timeout=30)[0].strip() for p in procs]
+        self.assertEqual(outs.count("OK"), 1, outs)
+        self.assert_no_leftovers()
+
+    # ---------------------------------------------------------- 调度器收尾
+    def make_run(self, run_id, args, mode="read"):
+        rdir = os.path.join(self.root, ".peer-review", "runs", run_id)
+        os.makedirs(rdir)
+        meta = {"run_id": run_id, "root": self.root, "cwd": self.root, "agent": "claude",
+                "kind": "exec" if mode == "write" else "review", "mode": mode, "args": args,
+                "timeout_minutes": 1, "auth": {"category": "subscription", "desc": "test"}}
+        with open(os.path.join(rdir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        if mode == "write":
+            peer.snapshot(self.root, os.path.join(rdir, "snapshot"))
+            self.assertIsNone(peer.acquire_write_lock(self.root, run_id))
+        return rdir
+
+    def run_dispatcher(self, rdir):
+        saved = {}
+        for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                saved[sig] = signal.getsignal(sig)
+        try:
+            with patch.object(peer, "GLOBAL_LOG", os.path.join(self.root, "global.jsonl")), \
+                 patch.object(peer, "get_active_stop_lock", return_value=(None, None)):
+                peer.cmd_run(rdir)
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "需要 POSIX 进程组")
+    def test_dispatcher_cleans_process_group_on_normal_exit(self):
+        """直接子进程正常退出后，调度器仍须清理其后台孙进程。"""
+        pidfile = os.path.join(self.root, "grandchild.pid")
+        rdir = self.make_run("RUN_NORMAL", ["sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $! > '%s'; exit 0" % pidfile])
+        calls = []
+        real = peer.terminate_child
+
+        def spy(child, grace):
+            calls.append(grace)
+            return real(child, grace)
+        with patch.object(peer, "terminate_child", side_effect=spy):
+            self.run_dispatcher(rdir)
+        self.assertTrue(calls, "正常退出路径没有调用 terminate_child")
+        with open(pidfile, encoding="utf-8") as f:
+            grandchild = int(f.read())
+        deadline = time.time() + 5
+        while peer.pid_alive(grandchild) and time.time() < deadline:
+            time.sleep(0.05)
+        alive = peer.pid_alive(grandchild)
+        if alive:
+            os.kill(grandchild, signal.SIGKILL)
+        self.assertFalse(alive, "孙进程在正常退出路径下未被清理")
+        self.assertTrue(os.path.exists(os.path.join(rdir, "response.md")))
+
+    def test_dispatcher_teardown_order_in_write_mode(self):
+        """收尾顺序固定：销毁进程组 → 比对快照 → 释放写锁。"""
+        rdir = self.make_run("RUN_WRITE", [sys.executable, "-c", "print('x')"], mode="write")
+        events = []
+        real_t, real_c, real_r = peer.terminate_child, peer.compare, peer.release_write_lock
+
+        def t(child, grace):
+            events.append("terminate")
+            return real_t(child, grace)
+
+        def c(*a, **k):
+            events.append("compare")
+            return real_c(*a, **k)
+
+        def r(root, run_id):
+            events.append("release:" + ("held" if os.path.exists(self.lock) else "gone"))
+            return real_r(root, run_id)
+        with patch.object(peer, "terminate_child", side_effect=t), \
+             patch.object(peer, "compare", side_effect=c), \
+             patch.object(peer, "release_write_lock", side_effect=r):
+            self.run_dispatcher(rdir)
+        self.assertEqual(events, ["terminate", "compare", "release:held"])
+        self.assertFalse(os.path.exists(self.lock))
+        self.assertTrue(os.path.exists(os.path.join(rdir, "changes.md")))
+
+    def test_dispatcher_releases_write_lock_when_spawn_fails(self):
+        rdir = self.make_run("RUN_BAD", ["/nonexistent/peer-test-binary"], mode="write")
+        self.run_dispatcher(rdir)
+        self.assertFalse(os.path.exists(self.lock))
+        with open(os.path.join(rdir, "status.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["state"], "failed")
 
 
 if __name__ == "__main__":
