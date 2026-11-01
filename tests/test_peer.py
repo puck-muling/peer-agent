@@ -346,6 +346,59 @@ class TestPeerExtended(unittest.TestCase):
             peer.cmd_verify(VerifyArgs)
         self.assertEqual(cm.exception.code, 6)
 
+    def test_snapshot_skips_git_worktree_file(self):
+        """测试快照能正确忽略以普通文件存在的 .git（如 Git Worktree）"""
+        proj = os.path.join(self.test_dir, "worktree_proj")
+        os.makedirs(proj, exist_ok=True)
+        with open(os.path.join(proj, ".git"), "w", encoding="utf-8") as f:
+            f.write("gitdir: /some/path/to/worktree\n")
+        with open(os.path.join(proj, "hello.txt"), "w", encoding="utf-8") as f:
+            f.write("hello\n")
+        snap_dir = os.path.join(proj, ".peer-review", "snap")
+        entries = peer.snapshot(proj, snap_dir)["entries"]
+        self.assertIn("hello.txt", entries)
+        self.assertNotIn(".git", entries)
+
+    def test_since_freeze_reanchors_when_project_moved(self):
+        """测试项目移动/重命名后，since-freeze 能够自动重锚快照与项目根目录"""
+        proj = os.path.join(self.test_dir, "orig_proj")
+        os.makedirs(proj, exist_ok=True)
+        plan_file = os.path.join(proj, "plan.md")
+        with open(plan_file, "w", encoding="utf-8") as f:
+            f.write("# Plan\nInitial\n")
+        with open(os.path.join(proj, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('v1')\n")
+
+        class FreezeArgs:
+            cwd = proj
+            plan = plan_file
+            quote = ""
+            review_receipt = ""
+
+        peer.cmd_freeze(FreezeArgs)
+        frozen_file = os.path.join(proj, "plan_冻结v001.md")
+        self.assertTrue(os.path.exists(frozen_file))
+
+        # 移动整个项目文件夹
+        new_proj = os.path.join(self.test_dir, "moved_proj")
+        shutil.move(proj, new_proj)
+        new_frozen_file = os.path.join(new_proj, "plan_冻结v001.md")
+
+        # 修改新项目下的文件
+        with open(os.path.join(new_proj, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('v2')\n")
+
+        class SinceArgs:
+            frozen = new_frozen_file
+            cwd = None
+
+        # 执行 since-freeze，不报错且能检测到改动
+        peer.cmd_since_freeze(SinceArgs)
+        # 验证新位置下生成了 changes 文件
+        freeze_dir = os.path.join(new_proj, ".peer-review", "freeze")
+        subdirs = [os.path.join(freeze_dir, d) for d in os.listdir(freeze_dir) if os.path.isdir(os.path.join(freeze_dir, d))]
+        self.assertTrue(any(any(f.startswith("changes-") for f in os.listdir(d)) for d in subdirs))
+
     def test_oauth_token_auth_state(self):
         """测试 Claude Code 官方 oauth_token 登录态能够被正确识别为 subscription"""
         with patch.dict(os.environ, {}, clear=True), patch.object(peer, "run_quick", return_value=(0, '{"loggedIn": true, "authMethod": "oauth_token", "subscriptionType": "pro"}', "")):

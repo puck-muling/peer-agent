@@ -359,7 +359,7 @@ If intentionally switching to an official API login, complete and confirm it in 
 
 | Component | Path and description |
 | :--- | :--- |
-| Core coordinator | [`bin/peer`](./bin/peer), currently 2,028 lines, Python standard library only, no persistent daemon |
+| Core coordinator | [`bin/peer`](./bin/peer), currently 2,248 lines, Python standard library only, no persistent daemon |
 | CLI adaptation skills | [`skills/`](./skills/), for Claude Code, Codex, and Antigravity; not official vendor products |
 | Task templates | [`templates/`](./templates/), 5 files: `review.md`, `plan.md`, `advice.md`, `exec.md`, `image.md` |
 | Installer | [`install.sh`](./install.sh), file copies by default; symlinks are opt-in |

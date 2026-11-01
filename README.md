@@ -359,7 +359,7 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 | 组成 | 路径与说明 |
 | :--- | :--- |
-| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,028 行，仅用 Python 标准库，无常驻守护进程 |
+| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,248 行，仅用 Python 标准库，无常驻守护进程 |
 | CLI 适配技能 | [`skills/`](./skills/)，适配 Claude Code、Codex 与 Antigravity，非这些厂商官方出品 |
 | 任务模板 | [`templates/`](./templates/)，共 5 份：`review.md`、`plan.md`、`advice.md`、`exec.md`、`image.md` |
 | 安装器 | [`install.sh`](./install.sh)，默认文件复制，可显式选择软链接 |

@@ -133,7 +133,7 @@ SKIP_DIRS = {
     ".peer-review", ".council", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     ".next", ".nuxt", ".gradle", ".idea", ".cache", ".tox",
 }
-SKIP_FILES = {".DS_Store"}
+SKIP_FILES = {".DS_Store", ".git"}
 COPY_MAX = 2 * 1024 * 1024        # 单个文本文件超过 2MB 不复制（只记指纹）
 HASH_MAX = 64 * 1024 * 1024       # 超过 64MB 的文件只记大小和修改时间
 TOTAL_COPY_CAP = 300 * 1024 * 1024
@@ -2049,11 +2049,21 @@ def cmd_verify(a):
 
 def cmd_since_freeze(a):
     frozen, meta = load_frozen(a.frozen)
-    c = compare(meta["snapshot"], meta["project"])
+    proj_root = getattr(a, "cwd", None) or project_root(os.path.dirname(frozen)) or os.getcwd()
+    project_dir = meta.get("project")
+    snapshot_dir = meta.get("snapshot")
+    if getattr(a, "cwd", None) or not project_dir or not os.path.isdir(project_dir):
+        project_dir = proj_root
+    if snapshot_dir and not os.path.isdir(snapshot_dir):
+        snap_name = os.path.basename(snapshot_dir)
+        candidate = os.path.join(proj_root, ".peer-review", "freeze", snap_name)
+        if os.path.isdir(candidate):
+            snapshot_dir = candidate
+    c = compare(snapshot_dir, project_dir)
     md = changes_markdown(c, "冻结以来的改动")
     stamp = ts()
-    mdp = os.path.join(meta["snapshot"], "changes-%s.md" % stamp)
-    dp = os.path.join(meta["snapshot"], "changes-%s.diff" % stamp)
+    mdp = os.path.join(snapshot_dir, "changes-%s.md" % stamp)
+    dp = os.path.join(snapshot_dir, "changes-%s.diff" % stamp)
     with open(mdp, "w", encoding="utf-8") as f:
         f.write(md)
     with open(dp, "w", encoding="utf-8") as f:
@@ -2223,7 +2233,7 @@ def main():
     f = sp.add_parser("freeze"); f.add_argument("plan"); f.add_argument("--cwd", required=True); f.add_argument("--quote", default="")
     f.add_argument("--review-receipt", default="", help="终审回执的事务目录（可选；若配置了配套审阅插件则传入 transactions/<submission_id>/，留空则以独立指纹模式固化）")
     v = sp.add_parser("verify"); v.add_argument("frozen")
-    sf = sp.add_parser("since-freeze"); sf.add_argument("frozen")
+    sf = sp.add_parser("since-freeze"); sf.add_argument("frozen"); sf.add_argument("--cwd", default=None, help="项目当前工作目录（重命名或移动项目后使用）")
     sp.add_parser("stats")
     a = p.parse_args()
     try:
