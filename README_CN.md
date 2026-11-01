@@ -121,6 +121,187 @@ peer doctor
 
 ---
 
+## 📖 使用指南 (Usage Guide)
+
+PeerAgent 支持两种交互方式：**三端无缝斜杠命令（日常最推荐）** 与 **终端 CLI 命令行直接调度（自动化/脚本）**。
+
+### 方式一：斜杠命令原生交互（推荐）
+
+安装完成后，无须启动任何常驻后台服务。在你的日常交互界面直接输入斜杠指令即可发起调度：
+
+| 发起端 | 常用指令示例 | 底层执行端 | 典型场景 |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | `/codex 审阅当前 git diff，排查并发与边界条件` | Codex (无头) | 让 Codex 交叉挑刺，防止代码逻辑盲区 |
+| **OpenAI Codex** | `/claude 复核重构模块的命名规范与类型设计` | Claude (无头) | 让 Claude 独立核实结构合理性与回归风险 |
+| **Antigravity** | `/codex 审阅当前代码` 或 `/claude 给出优化方案` | Codex / Claude | 作为主持人统一调度对等交叉审阅与方案制定 |
+
+> [!TIP]
+> **自然语言智能意图路由**：
+> 调度器会自动识别任务意图并切换只读/可写安全沙箱：
+> - 包含“审阅 / 看看 / 检查 / review” → **严格只读沙箱 (`review`)**
+> - 包含“方案 / 怎么做 / 计划 / plan” → **方案构思模式 (`plan`)**
+> - 包含“分析 / 为什么 / 建议 / advice” → **结论与建议模式 (`advice`)**
+> - 包含“修改 / 实现 / 修复 / exec”（需明确授权） → **安全可写沙箱 (`exec`)**，自动备份并对比快照
+
+---
+
+### 方式二：终端 CLI 命令行直接调度
+
+适合在系统终端、CI/CD 自动化流水线或脚本中直接唤起：
+
+```bash
+# 1. 运行系统环境与认证自检
+peer doctor
+
+# 2. 发起只读代码审阅（非阻塞后台运行）
+peer ask codex review --request ./task.md --cwd .
+
+# 3. 等待审阅任务完成并原地输出格式化报告
+peer wait <run_id> --cwd .
+
+# 4. 查看当前项目或全局调用历史状态
+peer status --cwd .
+
+# 5. 查看当日调用次数与 Token 用量统计
+peer stats
+```
+
+<details>
+<summary><b>点击查看：全量 CLI 命令与参数速查表</b></summary>
+
+| 命令 | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `peer doctor` | `[--approve]` | 检查 Python、CLI、登录状态、模型与熔断锁；`--approve` 用于批准并记住新的登录方式 |
+| `peer ask <agent> <kind>` | `--request <file> --cwd <dir> [--model <m>] [--effort <e>]` | 在后台拉起指定 Agent 执行任务（`kind` 可选：`review` / `plan` / `advice` / `exec`） |
+| `peer wait <run_id>` | `--cwd <dir> [--timeout <sec>]` | 等待后台任务并实时打印结构化审阅报告（只读模式） |
+| `peer status [run_id]` | `--cwd <dir>` | 查看当前工作区最近 10 次调用的运行状态或指定运行编号的详细日志 |
+| `peer freeze <doc>` | `--cwd <dir> [--quote <原话>]` | 对方案文档进行 SHA-256 指纹固化与快照归档，生成交接语 |
+| `peer verify <doc>` | 无 | 校验冻结版方案文档是否遭到篡改 |
+| `peer since-freeze <doc>` | 无 | 对比自方案冻结以来的项目代码改动 diff |
+| `peer stats` | 无 | 汇总显示当天各模型的调用频次、Token 用量与响应耗时 |
+
+</details>
+
+---
+
+## ⚙️ 进阶配置指南 (Configuration)
+
+PeerAgent 的设计哲学是**“开箱即用，零配可用”**（默认自动跟随客户端已有设置）。如果你需要指定特定的模型代系、调整思考深度或配置本地代理，可以通过配置文件进行深度定制。
+
+### 配置文件位置
+- **默认路径**：`~/.peer-review/config.json`（安装脚本会自动生成默认配置）
+- **自定义路径**：可通过环境变量 `PEER_CONFIG` 指定自定义配置文件路径。
+
+### 完整配置范例 (`config.json`)
+```json
+{
+  "bins": {
+    "claude": "claude",
+    "codex": "codex"
+  },
+  "models": {
+    "claude": "",
+    "codex": ""
+  },
+  "efforts": {
+    "claude": "",
+    "codex": "high"
+  },
+  "service_tiers": {
+    "codex": "default"
+  },
+  "follow_app_settings": true,
+  "approved_auth": {
+    "claude": "subscription",
+    "codex": "subscription"
+  },
+  "max_turns": {
+    "read": 20,
+    "write": 120
+  },
+  "timeout_minutes": {
+    "read": 30,
+    "write": 60
+  },
+  "proxy_check": null,
+  "codex_disable_apps": false
+}
+```
+
+### 配置项详细说明
+
+| 配置键名 | 类型 | 默认值 | 作用说明 |
+| :--- | :--- | :--- | :--- |
+| `bins` | `object` | `{"claude":"claude", "codex":"codex"}` | 指定底层的可执行命令名或绝对路径。如果安装在非标准目录可填绝对路径（如 `/usr/local/bin/claude`）。 |
+| `models` | `object` | `{"claude":"", "codex":""}` | 固定指定模型代系。留空 `""` 表示自动跟随客户端当前设置；亦可显式指定（如 `"claude": "claude-3-5-sonnet-20241022"`、`"codex": "gpt-4o"`）。 |
+| `efforts` | `object` | `{"claude":"", "codex":"high"}` | 深度思考/推理强度。可选值：`low`（低）、`medium`（中）、`high`（高）、`xhigh`（超高）。 |
+| `service_tiers` | `object` | `{"codex":"default"}` | Codex 客户端服务层级，通常保留 `"default"`。 |
+| `follow_app_settings`| `boolean` | `true` | 当 `models` 或 `efforts` 为空时，是否自动读取并继承客户端原生的当前激活设置。 |
+| `approved_auth` | `object` | `{"claude":"subscription", "codex":"subscription"}` | **防盗刷/防账单核心锁**：已批准的登录方式。若实际登录方式与之不符，调度器物理阻断（退出码 3），须人工运行 `peer doctor --approve` 确认后方可调用。 |
+| `max_turns` | `object` | `{"read": 20, "write": 120}` | 单次任务最大对话轮次物理上限，杜绝死循环消耗额度。 |
+| `timeout_minutes` | `object` | `{"read": 30, "write": 60}` | 任务最长执行超时时间（分钟），超时后自动安全终止子进程并回收资源。 |
+| `proxy_check` | `array\|null`| `null` | 本地代理连通性检查。可配置如 `["127.0.0.1", 7890]`，在 `peer doctor` 时校验代理存活状态。 |
+| `codex_disable_apps` | `boolean` | `false` | 是否禁用 Codex 扩展插件/Apps。设为 `true` 可确保审阅处于最精简纯粹的代码分析环境。 |
+
+---
+
+### 3 种高频实用配置配方 (Recipes)
+
+#### 配方 1：固定高强度深度审阅模型
+如果你希望无论交互终端当前设置是什么，后台交叉审阅时都固定使用顶级模型与高强度思考：
+```json
+{
+  "models": {
+    "claude": "claude-3-5-sonnet-20241022",
+    "codex": "gpt-6.1-sol"
+  },
+  "efforts": {
+    "claude": "high",
+    "codex": "high"
+  }
+}
+```
+
+#### 配方 2：配置本地代理网络检查
+在需要通过本地 HTTP/SOCKS 代理访问官方服务的网络环境下，让 `peer doctor` 自动检查代理端口：
+```json
+{
+  "proxy_check": ["127.0.0.1", 15236]
+}
+```
+
+#### 配方 3：切换为官方 API Key 模式
+如果你选择使用官方 API Key 而非会员订阅，在完成 CLI 的 API 登录后，更新批准模式并保存：
+```bash
+# 确认当前登录变更为 API 模式后，直接批准更新配置：
+peer doctor --approve
+```
+对应 `config.json` 将自动记录：
+```json
+{
+  "approved_auth": {
+    "claude": "api",
+    "codex": "api"
+  }
+}
+```
+
+---
+
+## 🌐 环境变量参考 (Environment Variables)
+
+PeerAgent 遵循 POSIX 标准，支持通过环境变量灵活定制运行时行为：
+
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `PEER_HOME` | `~/.peer-review` | PeerAgent 数据主目录，包含配置文件、模板库与全局调用审计日志。 |
+| `PEER_CONFIG` | `$PEER_HOME/config.json` | 显式指定 `config.json` 的绝对路径。 |
+| `PEER_TEMPLATES_DIR` | `$PEER_HOME/templates` | 任务 Prompt 模板目录（内置 `review.md`, `plan.md`, `advice.md`, `exec.md`）。 |
+| `PEER_DEPTH` | `0` | **防递归调用环境变量**：由调度器在派生子进程时自动注入。若大于等于 1，子进程再次调用 peer 时将被物理拦截（退出码 2）。 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 系统默认 | 调度器拉起子进程时自动继承当前 Shell 的标准网络代理配置。 |
+
+---
+
 ## 系统架构与工作原理
 
 <details>
@@ -139,24 +320,6 @@ peer doctor
 * **证据优先独立审阅**：任务书排版先列用户原话、代码行号与真实 Git Diff，再列待审假设。审阅者先独立核验客观证据，再给出事实、结论与独立性自述，最终由人类主持人核验决策。
 
 详细系统设计请阅读 [架构设计文档 (docs/architecture.md)](./docs/architecture.md)。
-</details>
-
-<details>
-<summary><b>命令行直接调用方式 (CLI Reference)</b></summary>
-
-```bash
-# 1. 运行自检
-peer doctor
-
-# 2. 发起异步只读审阅
-peer ask codex review --request ./task.md --cwd .
-
-# 3. 轮询等待并收取报告
-peer wait <run_id> --cwd .
-
-# 4. 查看当日调用统计与 Token 用量
-peer stats
-```
 </details>
 
 ---
