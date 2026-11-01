@@ -20,9 +20,9 @@ Local official CLIs · Existing subscriptions supported · Read-only reviews · 
 
 ## Demo video
 
-<a href="https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent demo video cover, click to watch" width="100%" /></a>
+https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 
-▶ [Watch the demo video](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
+▶ [Direct link / Download MP4](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
 
 > [!NOTE]
 > **Notice on Same-Named Projects**: This project (`puck-muling/peer-agent`) is a lightweight **multi-agent safety governance & peer-review middleware** for real-world software engineering (running via local official CLIs, zero third-party pip dependencies, hardened billing gates and circuit breakers). It is completely distinct in architecture and use-case from `hirak99/peer-agent` (an HTTP/FastAPI-based companion agent framework).

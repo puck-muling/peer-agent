@@ -20,9 +20,9 @@
 
 ## 演示视频
 
-<a href="https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent 演示视频封面，点击观看" width="100%" /></a>
+https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 
-▶ [观看演示视频](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
+▶ [备用观看直链 / 下载 MP4](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
 
 > [!NOTE]
 > **同名项目说明**：本项目（`puck-muling/peer-agent`）是面向代码工程实战的**多智能体安全治理与对等审查中间件**（基于本地官方 CLI、零第三方 pip 依赖、内置计费门禁与封号熔断）；不同于 `hirak99/peer-agent`（基于 HTTP/FastAPI 的伴生 Agent 框架），二者架构与应用场景完全不同。
