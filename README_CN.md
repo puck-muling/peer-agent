@@ -20,9 +20,9 @@
 
 ## 演示视频
 
-<a href="./docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent 演示视频封面，点击观看" width="100%" /></a>
+<a href="https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent 演示视频封面，点击观看" width="100%" /></a>
 
-▶ [观看演示视频](./docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
+▶ [观看演示视频](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
 
 适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.10+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 原生及 WSL 尚无本项目的完整验证记录。
 

@@ -20,9 +20,9 @@ Local official CLIs · Existing subscription logins supported · Read-only revie
 
 ## Demo video
 
-<a href="./docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent demo video cover, click to watch" width="100%" /></a>
+<a href="https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4"><img src="./docs/assets/demo_cover.jpg" alt="PeerAgent demo video cover, click to watch" width="100%" /></a>
 
-▶ [Watch the demo video](./docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
+▶ [Watch the demo video](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
 
 For developers already using Claude Code or Codex who want a second review. You need **Python 3.10+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS / Linux. Native Windows and WSL do not yet have complete project validation records.
 
