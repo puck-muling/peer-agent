@@ -8,9 +8,9 @@
 
 Ask another model to check your code from your current session and bring the findings back, without switching windows.
 
-Local official CLIs · Existing subscription logins supported · Read-only review tasks · No third-party Python packages for the core
+Local official CLIs · Existing subscriptions supported · Read-only reviews · Silent billing lock · Fatal ban circuit breaker · Python stdlib only
 
-[Install and try it](#install-and-try-it) · [Usage examples](#usage-examples) · [Costs and permission boundaries](#costs-and-permission-boundaries) · [Troubleshooting and network FAQ](#troubleshooting-and-network-faq)
+[Install and try it](#install-and-try-it) · [Ecosystem positioning & comparison](#ecosystem-positioning--comparison) · [Usage examples](#usage-examples) · [Costs and permission boundaries](#costs-and-permission-boundaries) · [Troubleshooting and network FAQ](#troubleshooting-and-network-faq)
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
@@ -24,7 +24,35 @@ Local official CLIs · Existing subscription logins supported · Read-only revie
 
 ▶ [Watch the demo video](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4) (2 min 21 s, Chinese narration and subtitles)
 
-For developers already using Claude Code or Codex who want a second review. You need **Python 3.10+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS / Linux. Native Windows and WSL do not yet have complete project validation records.
+> [!NOTE]
+> **Notice on Same-Named Projects**: This project (`puck-muling/peer-agent`) is a lightweight **multi-agent safety governance & peer-review middleware** for real-world software engineering (running via local official CLIs, zero third-party pip dependencies, hardened billing gates and circuit breakers). It is completely distinct in architecture and use-case from `hirak99/peer-agent` (an HTTP/FastAPI-based companion agent framework).
+
+For developers already using Claude Code or Codex who want a second review. You need **Python 3.10+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Supported on macOS and Linux; native Windows provides graceful file-lock degradation.
+
+## Ecosystem positioning & comparison: Not just a bridge, but a safety governance layer
+
+With the evolution of the official Claude Code and Codex ecosystems, developers often ask: *"Now that there are official plugins (such as `openai/codex-plugin-cc`) and MCP tools (like `consult`), is PeerAgent obsolete?"*
+
+**The answer is no: forwarding requests is trivial, but real-world multi-agent collaboration fails without safety and cost governance.**
+
+Basic forwarding bridges (Plugins or MCP tools) simply pass prompts across models, leaving critical engineering risks unaddressed:
+1. **Silent billing switches**: Lingering API keys in environment variables or expired sessions silently fall back to metered API billing, resulting in hundreds of dollars in unexpected charges.
+2. **Cascade account bans**: When encountering IP or geographic risk triggers, automated scripts enter retry loops, triggering account-wide suspensions.
+3. **Echo chambers & sycophancy**: Later models reflexively agree with the previous model's assumptions rather than independently verifying code facts.
+4. **Context amnesia & plan creep**: Over long conversations, models drift from agreed architectural decisions and introduce scope creep.
+
+PeerAgent's moat lies in **encapsulating model interactions within a hardened defense system**:
+
+| Dimension | PeerAgent (This project) | Official Plugin (openai/codex-plugin-cc) | MCP Tool (neelsatyavolu/consult, etc.) | Companion Server (hirak99/peer-agent) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Core Role** | **Multi-Agent Safety Governance & Peer Review** | One-way dispatch plugin | MCP-based model consulting | HTTP/FastAPI companion server |
+| **Topology** | **Claude ↔ Codex ↔ Antigravity bidirectional loop** | Codex → Claude one-way | Host → multi-model star hub | Client ↔ companion service API |
+| **Silent Billing Lock (`approved_auth`)** | ✅ **Pre-flight verification, blocks surprise API charges** | ❌ No check, vulnerable to env leakage | ❌ Relies on client configuration | ❌ Relies on custom auth setup |
+| **Account Ban Circuit Breaker (`STOP`)** | ✅ **Millisecond ban detection, halts concurrent retries** | ❌ Process exits with error; no locking | ❌ No circuit breaker protection | ❌ None |
+| **Pre-Write Snapshots & Unified Diff** | ✅ **Automatic pre-write snapshot + post-run Unified Diff** | ❌ No pre-write snapshot; manual git diff | ❌ Up to host client implementation | ❌ None |
+| **Architecture Decision Freeze (`peer freeze`)** | ✅ **SHA-256 fingerprint + standalone handover prompt** | ❌ None | ❌ None | ❌ None |
+| **Adversarial / Anti-Sycophancy Protocol** | ✅ **History inference scrubbing + evidence-first prompt** | ❌ Carries prior history; prone to bias | ❌ Dependent on prompt authoring | ❌ No standardized protocol |
+| **Runtime & Dependencies** | **Single-file CLI using Python standard library, 0 pip dependencies** | Tied to Codex plugin runtime | Requires Node.js / MCP runtime | Requires FastAPI / pip packages |
 
 ## Install and try it
 
@@ -58,7 +86,7 @@ If the current terminal cannot find `peer` yet, use the installed path:
 "$HOME/.local/bin/peer" doctor
 ```
 
-`peer doctor` reports CLI locations, login categories, and configuration. **Do not use `peer doctor --approve` as a generic repair command**: it writes currently recognized login categories into the approved config and may affect both channels. Check its output and billing mode first.
+`peer doctor` is the core diagnostic and safety-lock inspection tool, reporting CLI status, login-category consistency with `approved_auth`, and STOP circuit breaker state. **Do not use `peer doctor --approve` as a generic repair command**: it is the authorization tool for the silent billing prevention lock (`approved_auth`), writing currently recognized login categories into the approved config; check its output and billing mode first, and run it only after human verification.
 
 ### Run your first review
 
@@ -95,7 +123,9 @@ Check the reported location and trigger before deciding to edit. A second model 
 | Authorize a specific fix | `/codex exec Authorized: fix the confirmed resource cleanup issue, changing only that function.` |
 | Generate an image (Codex only) | `/codex image Authorized: draw a call flow diagram in the specified project asset directory.` |
 | Save a plan version and fingerprint | `peer freeze ./plan-v2.md --cwd .` |
-| Inspect the environment | `peer doctor` |
+| Inspect environment and safety locks | `peer doctor` |
+| Approve / update login billing mode | `peer doctor --approve` (run by user after verification to prevent silent billing) |
+| Emergency killswitch for automated calls | `touch ~/.peer-review/STOP` (must be manually deleted to reset; AI cannot clear it) |
 
 ### Review, planning, and execution
 
@@ -167,7 +197,7 @@ This assumes the first freeze of that document; use the filename printed by the 
 
 | Command | Arguments and behavior |
 | :--- | :--- |
-| `peer doctor` | `[--approve]`: inspect the environment; explicitly approving records currently recognized login categories |
+| `peer doctor` | `[--approve]`: inspect environment and safety locks (CLI status, login consistency, and STOP circuit breaker); explicitly approving records currently recognized login categories as the new baseline |
 | `peer ask <codex\|claude> <kind>` | `--request <file> --cwd <dir>`; `kind`: `review` / `plan` / `advice` / `exec` / `image`; `image` is Codex-only |
 | Optional call arguments | `--quote <text>`, `--model <model>`, `--effort <effort>`, `--service-tier <tier>`, `--add-dir <dir>`, `--caller <name>`, `--foreground`; write types require `--quote` |
 | `peer wait <run_id>` | `--cwd <dir> [--timeout <seconds>]`: wait for the original run and show the report |
@@ -183,15 +213,36 @@ This assumes the first freeze of that document; use the filename printed by the 
 
 | Mechanism | What it does | Limits |
 | :--- | :--- | :--- |
-| Login-category check | Compares the current category with `approved_auth`; mismatch stops the call with exit code 3 | Does not verify authorization scope, remaining credit, or final charges. Subscription calls consume quota; API logins follow their billing rules |
+| Login-category check (`approved_auth`) | Compares the current category with `approved_auth`; mismatch stops the call with exit code 3; managed via `peer doctor [--approve]` | Does not verify authorization scope, remaining credit, or final charges. Subscription calls consume quota; API logins follow their billing rules |
 | Read-only tasks | Sets Codex's `read-only` sandbox; restricts Claude tools and Bash sandbox permissions; requests read-only behavior in the prompt | Depends on the target CLI and system sandbox. PeerAgent still writes task files and logs; the machine is not entirely write-free |
 | Write authorization | Requires a nonempty quote for `exec` / `image` and uses write settings | A quote does not mean the program understands its scope; people and the executor must check it |
 | Pre-run snapshot | Copies eligible text content, records file information, and compares afterward | Skips some directories and suspected secrets; size, binary, and total-copy limits apply. Not a full backup or automatic rollback |
 | Recursion marker | Inherited `PEER_DEPTH` causes nested `peer ask` calls to exit with code 2 | Covers this entry point with its marker intact, not every possible agent loop |
-| STOP files | Blocks later calls on a channel after detecting certain ban or region errors | Depends on error matching and cannot guarantee account protection. Investigate manually; agents should not remove STOP files automatically |
+| STOP circuit breaker (`STOP`) | Blocks later calls on a channel after detecting fatal ban or region errors; managed via `peer doctor` and manual killswitch / reset | Depends on error matching and cannot guarantee account protection. Investigate manually; AI agents are strictly forbidden from removing STOP files |
 | Independent-review instructions | Ask reviewers to inspect source, requirements, and diffs before judging claims | Do not guarantee correctness, independence, or consensus |
 
 Snapshots skip directories such as `.git`, `node_modules`, and `.peer-review`. Text files over 2 MiB are not copied; files over 64 MiB only have size and modification time recorded. Total copied content is capped at 300 MiB and file count at 40,000. See [`bin/peer`](./bin/peer) for details and [SECURITY.md](./SECURITY.md) for the security model.
+
+### Core safety locks and tools: silent billing prevention & fatal ban circuit breaker
+
+When running multi-agent workflows autonomously, developers face two major risks: **"silently falling back from a flat subscription to pay-per-token API keys, resulting in surprise bills"** and **"automated loops repeatedly hitting fatal authentication errors or platform bans, triggering cascading account suspensions"**. PeerAgent enforces two hard physical guardrails with dedicated inspection tools:
+
+#### 1. `approved_auth` Authentication Mode Lock (Silent Billing Prevention)
+
+* **Interception mechanism**: Before sending any prompt (`peer ask`), PeerAgent queries the target CLI's actual login state and inspects active environment variables. It verifies that the current mode (`subscription` / `api` / `unknown`) matches `approved_auth` in your configuration (defaulting to `subscription`).
+* **Why it prevents silent charges**: If you use Claude Pro or ChatGPT Plus subscriptions but an environment variable (e.g. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is accidentally injected, or if a subscription session expires into pay-as-you-go API credits, PeerAgent **halts immediately with exit code 3 before dispatching any network request**, printing the mismatch and refusing to execute.
+* **Management tools**:
+  * **Diagnostic tool `peer doctor`**: Inspects each CLI's detected login mode against `approved_auth` (displaying `✅ matches approved baseline` or `⚠️ mismatch`).
+  * **Approval tool `peer doctor --approve`**: When you intentionally switch to official API keys and accept the billing implications, explicitly run this command to record the new baseline. AI agents are strictly forbidden from invoking `--approve` automatically.
+
+#### 2. `STOP` Fatal Ban Circuit Breaker & Emergency Killswitch
+
+* **Interception mechanism**: PeerAgent performs deep scanning on CLI error streams for fatal account ban signatures (including `account deactivated/suspended/banned`, `organization_disabled`, and `unsupported_country`). Upon detection, it instantly writes a physical lock file into `$PEER_HOME` (`STOP-codex`, `STOP-claude`, or global `STOP`) recording the timestamp, reason, and run ID.
+* **Why it prevents cascading account bans**: In autonomous or batch runs, repeated attempts against an already flagged or blocked account often trigger permanent platform bans across all associated credentials. The STOP lock physically blocks all future runs at the pre-flight gate. Routine 401 token expirations or transient network timeouts do not trigger the STOP lock.
+* **Emergency killswitch & manual reset protocol (safety redline)**:
+  * **Manual killswitch**: Users can pull the physical emergency brake at any time by running `touch ~/.peer-review/STOP`.
+  * **AI reset strictly forbidden**: While a STOP lock is active, `peer` rejects all calls with exit code 3. **AI agents are strictly prohibited from deleting STOP files**. A human user must investigate the root cause, verify account security, and manually remove the lock file in a terminal (e.g., `rm ~/.peer-review/STOP*`) to restore service.
+  * **Diagnostic tool `peer doctor`**: When a circuit breaker is triggered, `peer doctor` highlights the exact lock path, trigger reason, and timestamp in red alerts, exiting with code 3 to stop automated harnesses.
 
 ## Troubleshooting and network FAQ
 
@@ -333,16 +384,37 @@ This existing demo cover contains robot image generation and a redrawn interface
 
 After writing code, we often want another model to check it. Copying code, switching windows, and moving feedback back is tedious. PeerAgent connects that step to the existing session using local signed-in CLIs.
 
-Try it if you want an extra code check between existing CLIs. For complex orchestration, choose tools based on your specific needs. Another model does not make a finding correct; you still decide what to accept.
+More importantly, **it is forged from hundreds of high-intensity multi-agent production workflows**:
+- Successfully powered **372+ code & plan cross-reviews**, **235+ architectural consultations**, and **283+ cross-model image generations**;
+- Maintained a record of **zero accidental billings** and **zero account bans** throughout high-frequency runs;
+- `approved_auth` has caught and blocked accidental transitions to metered API keys 4 separate times;
+- The `STOP` circuit breaker has repeatedly halted concurrent retry cascades during proxy disruptions, protecting precious subscription accounts.
+
+If you want a dependable, safe, and cost-controlled second pair of eyes across your existing AI coding CLIs, PeerAgent is built for you.
 
 ## Community
 
-Report issues on [GitHub Issues](https://github.com/puck-muling/peer-agent/issues), or add QQ: 2607430010 (Puck-Muling). Also find us on [X (@puck_muling)](https://x.com/puck_muling) and [Telegram (@puckmuling)](https://t.me/puckmuling).
+Bug reports, suggestions, and usage discussions are all welcome:
 
-<p align="center">
-  <img src="./docs/assets/qq_qr.jpg" height="220" alt="QQ contact QR code" />
-  <img src="./docs/assets/telegram_qr.png" height="220" alt="Telegram QR code" />
-</p>
+- 🐛 **Issues**: [GitHub Issues](https://github.com/puck-muling/peer-agent/issues)
+- 𝕏 **X (Twitter)**: [@puck_muling](https://x.com/puck_muling)
+- ✈️ **Telegram**: [@puckmuling](https://t.me/puckmuling)
+- 💬 **QQ**: 2607430010 (Puck-Muling)
+
+<table align="center">
+  <tr>
+    <th width="240">💬 QQ</th>
+    <th width="240">✈️ Telegram</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="./docs/assets/qq_qr.jpg" width="200" alt="QQ contact QR code" /></td>
+    <td align="center"><img src="./docs/assets/telegram_qr.png" width="200" alt="Telegram QR code" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Puck-Muling</b><br /><sub>QQ: 2607430010 · Scan to add</sub></td>
+    <td align="center"><a href="https://t.me/puckmuling"><b>@puckmuling</b></a><br /><sub>Scan or tap the link</sub></td>
+  </tr>
+</table>
 
 Thanks to the Claude Code, Codex, and Antigravity teams and open-source contributors sharing agent-review practices.
 

@@ -34,7 +34,10 @@
 import argparse
 import datetime
 import difflib
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import json
 import os
@@ -269,9 +272,17 @@ def write_json(path, data):
 def append_jsonl(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        if fcntl:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            except Exception:
+                pass
         f.write(json.dumps(data, ensure_ascii=False) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
+        if fcntl:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except Exception:
+                pass
 
 
 def sha256_file(path):
@@ -899,12 +910,17 @@ class ImageGlobalLock:
             timeout = 300.0
             locked = False
             while time.time() - t0 < timeout:
-                try:
-                    fcntl.flock(self.fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl:
+                    try:
+                        fcntl.flock(self.fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        locked = True
+                        break
+                    except (BlockingIOError, OSError):
+                        time.sleep(1.0)
+                else:
+                    # Windows 或无 fcntl 环境优雅降级
                     locked = True
                     break
-                except (BlockingIOError, OSError):
-                    time.sleep(1.0)
             if not locked:
                 raise TimeoutError("排队获取全局生图排他锁超时（%d秒）。前序生图任务可能仍在运行中。" % int(timeout))
         except Exception as e:
@@ -969,7 +985,8 @@ class ImageGlobalLock:
             pass
         if self.fd:
             try:
-                fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
+                if fcntl:
+                    fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
                 self.fd.close()
             except Exception:
                 pass

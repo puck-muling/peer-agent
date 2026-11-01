@@ -535,6 +535,19 @@ class TestPeerExtended(unittest.TestCase):
                 peer.cmd_doctor(DoctorArgs)
             self.assertEqual(cm.exception.code, 2)
 
+    def test_cross_platform_fcntl_fallback(self):
+        """测试在无 fcntl 支持平台（如 Windows 原生环境）时的优雅降级"""
+        jsonl_path = os.path.join(self.test_dir, "test.jsonl")
+        with patch.object(peer, "fcntl", None):
+            peer.append_jsonl(jsonl_path, {"test": 123})
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                data = json.loads(f.readline())
+            self.assertEqual(data.get("test"), 123)
+
+            # 测试 ImageGlobalLock 在无 fcntl 时优雅降级不报错
+            with peer.ImageGlobalLock("run_mock_win"):
+                self.assertTrue(True)
+
 
 if __name__ == "__main__":
     unittest.main()

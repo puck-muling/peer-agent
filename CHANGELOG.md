@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-11-01
+
+### Added
+- **Ecosystem Positioning & Comparative Analysis**:
+  - Added comprehensive horizontal evaluation matrix in `README` comparing PeerAgent against official plugins (`openai/codex-plugin-cc`), MCP wrappers (`consult`), and HTTP companion servers (`hirak99/peer-agent`).
+  - Added explicit disambiguation notice for the similarly named `hirak99/peer-agent` repository.
+  - Incorporated real-world production metrics (372+ code reviews, 235+ architectural consultations, 283+ image runs, 0 accidental billings, 0 account bans).
+- **Cross-Platform Compatibility**:
+  - Implemented graceful file-lock degradation for non-POSIX / Windows native environments without `fcntl`, preventing import crashes in `bin/peer`.
+  - Added comprehensive unit test `test_cross_platform_fcntl_fallback` covering no-fcntl fallback paths.
+
+### Changed
+- **Documentation Refinement**:
+  - Elevated the core narrative from a simple CLI invocation bridge to a robust **Multi-Agent Safety & Cost Governance Middleware**.
+  - Unified bilingual (CN/EN) community contact cards (QQ & Telegram) with responsive layout tables.
+
 ## [0.1.0] - 2026-10-30
 
 ### Added

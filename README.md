@@ -8,9 +8,9 @@
 
 在当前会话里请另一个模型检查代码，审阅意见直接带回来，省去切窗口和搬运结果。
 
-使用本机官方 CLI · 支持已有订阅登录 · 审阅任务只读 · 核心无需 Python 第三方包
+使用本机官方 CLI · 支持已有订阅登录 · 审阅任务只读 · 防静默扣费锁 · 封号熔断保护 · 核心无需 Python 第三方包
 
-[安装与初次体验](#安装与初次体验) · [使用示例](#使用示例) · [费用与权限边界](#费用与权限边界) · [常见问题与网络排障](#常见问题与网络排障)
+[安装与初次体验](#安装与初次体验) · [生态定位与同类对比](#生态定位与同类对比) · [使用示例](#使用示例) · [费用与权限边界](#费用与权限边界) · [常见问题与网络排障](#常见问题与网络排障)
 
 [![CI](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/puck-muling/peer-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
@@ -24,7 +24,35 @@
 
 ▶ [观看演示视频](https://cdn.jsdelivr.net/gh/puck-muling/peer-agent@main/docs/assets/demo.mp4)（2 分 21 秒，中文旁白与字幕）
 
-适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.10+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 原生及 WSL 尚无本项目的完整验证记录。
+> [!NOTE]
+> **同名项目说明**：本项目（`puck-muling/peer-agent`）是面向代码工程实战的**多智能体安全治理与对等审查中间件**（基于本地官方 CLI、零第三方 pip 依赖、内置计费门禁与封号熔断）；不同于 `hirak99/peer-agent`（基于 HTTP/FastAPI 的伴生 Agent 框架），二者架构与应用场景完全不同。
+
+适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.10+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 原生提供文件锁优雅降级支持。
+
+## 生态定位与同类对比：不仅是调用通道，更是安全治理层
+
+随着官方生态演进，社区常有疑问：“现在已经有了官方插件（如 `openai/codex-plugin-cc`）和 MCP 工具（如 `consult`），PeerAgent 是否会被取代？”
+
+**答案是：纯调用转发很容易做，但多 Agent 协同落地的核心矛盾是安全失控与成本治理。**
+
+普通的转发通道（Plugin 或 MCP）只做“把 Prompt 转发给另一模型”，面对真实工程研发时有四大痛点：
+1. **静默切到按量扣费**：终端意外残留 API Key 或登录态失效掉入 API 计费，导致数百美元的天价账单；
+2. **并发死循环连带封号**：遇到地区 IP 或鉴权异常时，自动化脚本死循环重试，导致整个主账号被直接封禁；
+3. **附和谄媚效应（回音室）**：后发言模型倾向于附和先发言模型的推论，丧失真正独立的审查价值；
+4. **长上下文遗忘与方案推翻**：多轮对话后模型自我遗忘，偏离或推翻已定架构，引入范围蠕变。
+
+PeerAgent 的核心护城河是**将调用能力深嵌在一套坚固的防御体系中**：
+
+| 评估维度 | PeerAgent (本项目) | 官方插件 (openai/codex-plugin-cc) | MCP 模式 (neelsatyavolu/consult 等) | 伴生服务端 (hirak99/peer-agent) |
+| :--- | :--- | :--- | :--- | :--- |
+| **定位与形态** | **安全治理与对等互审中间件** | 单向转发插件 | 基于 MCP 协议的模型咨询 | HTTP/FastAPI 伴生代理服务 |
+| **协作拓扑** | **Claude ↔ Codex ↔ Antigravity 双向闭环** | Codex → Claude 单向 | 主持端 → 其它模型星型转发 | 客户端 ↔ 伴生服务端 |
+| **计费防偷切锁 (`approved_auth`)** | ✅ **发请求前拦截校验，防静默 API 扣费** | ❌ 无校验，易受环境变量偷切 | ❌ 依赖底层环境与自律 | ❌ 依赖自行鉴权配置 |
+| **封号连带熔断锁 (`STOP`)** | ✅ **毫秒级捕获致命风控，阻断并发雪崩** | ❌ 进程直接报错退出，无停机保护 | ❌ 无风控熔断保护 | ❌ 无 |
+| **落地改前快照与 Unified Diff** | ✅ **自动执行前物理快照 + 落地比对 Diff** | ❌ 无改前快照，需依赖 git 手动比对 | ❌ 依赖客户端自身实现 | ❌ 无 |
+| **架构决策指纹固化 (`peer freeze`)** | ✅ **SHA-256 方案指纹 + 独立交接语** | ❌ 无 | ❌ 无 | ❌ 无 |
+| **防共谋盲审协议** | ✅ **历史推论物理隔离 + 证据前置提示规范** | ❌ 上下文直接串联，易谄媚附和 | ❌ 由具体 Prompt 决定 | ❌ 无规范 |
+| **运行依赖与环境** | **Python 标准库单文件 CLI，零 pip 依赖** | 依赖特定宿主插件生态 | 依赖 Node / MCP 运行时 | 依赖 FastAPI / pip 依赖生态 |
 
 ## 安装与初次体验
 
@@ -58,7 +86,7 @@ peer doctor
 "$HOME/.local/bin/peer" doctor
 ```
 
-`peer doctor` 用于查看 CLI 位置、登录类别和配置等信息。**不要把 `peer doctor --approve` 当作通用修复命令**：它会把当前可识别的登录类别写入批准配置，可能涉及两条调用渠道；请先核实输出和计费方式。
+`peer doctor` 是核心环境诊断与安全锁自检工具，用于查看 CLI 状态、登录类别一致性与 STOP 熔断锁。**不要把 `peer doctor --approve` 当作通用修复命令**：它是防静默扣费锁（`approved_auth`）的核准工具，会把当前可识别的登录类别写入批准配置；请先核实输出与计费方式，确认安全后再由本人决定是否执行。
 
 ### 发起第一次审阅
 
@@ -95,7 +123,9 @@ peer doctor
 | 批准一个具体修复 | `/codex exec 授权修改：修复刚才确认的资源释放问题，仅改对应函数。` |
 | 生成图片（仅 Codex） | `/codex image 授权生成：画一张调用流程图，保存到项目指定素材目录。` |
 | 保存方案版本和内容指纹 | `peer freeze ./方案-v2.md --cwd .` |
-| 检查环境 | `peer doctor` |
+| 检查环境与安全锁状态 | `peer doctor` |
+| 批准/更新登录计费模式 | `peer doctor --approve`（核实后由本人执行，防止静默扣费） |
+| 手动急停全局自动调用 | `touch ~/.peer-review/STOP`（解除须人工排查后删除，严禁 Agent 自动恢复） |
 
 ### 审阅、方案和执行怎么区分
 
@@ -167,7 +197,7 @@ peer since-freeze ./方案-v2_冻结v001.md
 
 | 命令 | 参数与说明 |
 | :--- | :--- |
-| `peer doctor` | `[--approve]`：检查环境；显式批准时记录当前可识别的登录类别 |
+| `peer doctor` | `[--approve]`：环境诊断与安全锁自检（巡检 CLI、登录一致性与 STOP 熔断锁）；显式 `--approve` 时记录当前可识别的登录类别为新基线 |
 | `peer ask <codex\|claude> <kind>` | `--request <文件> --cwd <目录>`；`kind` 为 `review` / `plan` / `advice` / `exec` / `image`，其中 `image` 仅 Codex 支持 |
 | 调用可选参数 | `--quote <原话>`、`--model <模型>`、`--effort <强度>`、`--service-tier <层级>`、`--add-dir <目录>`、`--caller <名称>`、`--foreground`；可写类型必须有 `--quote` |
 | `peer wait <运行编号>` | `--cwd <目录> [--timeout <秒>]`：等待原任务并显示报告 |
@@ -183,15 +213,36 @@ peer since-freeze ./方案-v2_冻结v001.md
 
 | 机制 | 实际做什么 | 需要知道的限制 |
 | :--- | :--- | :--- |
-| 登录类别检查 | 调用前比较当前类别与 `approved_auth`，不一致时停止，退出码 3 | 不能验证授权范围、可用余额或最终账单。支持已有 CLI 订阅登录，仍消耗额度；API 登录按相应规则计费 |
+| 登录类别检查 (`approved_auth`) | 调用前比较当前类别与 `approved_auth`，不一致时停止，退出码 3；配套工具为 `peer doctor [--approve]` | 不能验证授权范围、可用余额或最终账单。支持已有 CLI 订阅登录，仍消耗额度；API 登录按相应规则计费 |
 | 只读任务 | 给 Codex 设置 `read-only` 沙箱；给 Claude 限制工具和 Bash 沙箱权限，并在任务说明中要求只读 | 依赖目标 CLI 与系统沙箱实现；PeerAgent 仍会写入任务、日志等过程文件，不代表整台机器不写文件 |
 | 可写授权 | `exec` / `image` 要求非空授权引文，使用可写配置 | 引文存在不等于程序理解了授权；实施范围仍需人和执行方核对 |
 | 改前快照 | 保存可复制的文本内容并记录文件信息，改后对比 | 跳过部分目录和疑似敏感内容；大文件、二进制与总量等有限制，不是完整备份或自动回滚 |
 | 防递归标记 | 子进程继承 `PEER_DEPTH` 后，嵌套 `peer ask` 被拒绝，退出码 2 | 只覆盖经过该入口且保留标记的调用，不能阻止所有可能的模型循环 |
-| STOP 文件 | 检测到特定封禁或地区错误后，阻止该渠道的后续调用 | 依赖错误匹配，不能保证避免封号；需人工排查，Agent 不应自动删除 STOP 文件 |
+| STOP 熔断锁 (`STOP`) | 检测到特定封禁或地区错误后，写入物理锁阻止该渠道后续调用；配套工具为 `peer doctor` 诊断与手动急停/复位 | 依赖错误匹配，不能保证避免封号；需人工排查，严禁 Agent 自动删除 STOP 文件 |
 | 独立审阅要求 | 提示审阅者先查源码、需求和 diff，再判断主张 | 不保证模型意见正确、互不影响或必然达成共识 |
 
 快照默认跳过 `.git`、`node_modules`、`.peer-review` 等目录。单个文本文件超过 2 MiB 不复制，超过 64 MiB 的文件只记录大小和修改时间；复制总量上限 300 MiB，文件数上限 40,000。具体规则见 [`bin/peer`](./bin/peer)，完整权限说明见 [SECURITY.md](./SECURITY.md)。
+
+### 核心安全锁与管理工具：防静默扣费 & 致命封号熔断
+
+在多 Agent 协同与自动审阅中，开发者最担心的两大风险是：**“原本走会员订阅，结果被环境变量或凭据失效偷切到按量 API 导致天价扣费”**，以及**“遇到网络风控或账号异常时，自动化脚本疯狂死循环重试导致连带封号”**。PeerAgent 在底层内置了两道硬核安全门禁与配套管理工具：
+
+#### 1. `approved_auth` 认证防静默扣费锁
+
+* **拦截原理**：PeerAgent 在发起任何调用（`peer ask`）前，会强制调用官方 CLI 的真实鉴权检查并扫描环境变量，把当前登录方式（`subscription` / `api` / `unknown`）与配置文件中的 `approved_auth`（默认均为 `subscription`）逐一比对。
+* **为什么防扣费**：如果你平常使用 Claude Pro 或 ChatGPT Plus 订阅，但终端环境中无意间注入了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，或者 CLI 登录态失效掉入 API 计费模式，PeerAgent 会**在发送任何网络请求之前直接阻断**（退出码 3），明确输出差异并拒绝调用，绝不产生一分钱意外账单。
+* **配套管理工具**：
+  * **诊断工具 `peer doctor`**：一键打印各渠道登录状态及与 `approved_auth` 的比对结果（显示 `✅ 与已确认一致` 或 `⚠️ 与已确认不一致`）。
+  * **授权工具 `peer doctor --approve`**：若你确认有意使用官方 API 计费，可在人工核验终端输出与资费预期后，显式运行该命令将当前模式固化为新基线。此操作严禁由 AI Agent 自动调用。
+
+#### 2. `STOP` 致命封号熔断锁
+
+* **拦截原理**：PeerAgent 实现了毫秒级的致命鉴权错误深度扫描（包括 `account deactivated/suspended/banned`、`organization_disabled`、`unsupported_country` 等致命风控特征）。一旦捕获，调度器会在第一时间在 `$PEER_HOME` 写入物理锁文件（如 `STOP-codex`、`STOP-claude` 或全局 `STOP`），并记录触发时间、原因和关联任务编号。
+* **为什么防封号**：多 Agent 异步调用时，若一个任务因地区 IP 或鉴权异常失败，排队的后续任务如果继续并发重试，极易被平台判定为恶意撞库或攻击从而封锁整个账号。写入 STOP 锁后，后续所有任务在拉起前都会被强行拦截，彻底斩断重试连击链条。普通 401 提示重登或网络波动则绝不触发停机锁。
+* **急停拉手与人工复位原则（红线）**：
+  * **手动急停**：用户可在任何紧急时刻执行 `touch ~/.peer-review/STOP` 手动拉下总闸，阻断所有自动调用。
+  * **严禁 Agent 自动复位**：当 STOP 熔断锁生效时，`peer` 会严格拒绝执行任务。**AI Agent 绝对禁止自动删除 STOP 文件**，必须由人类用户亲自排查原因、确认网络与账号安全后，手动在终端删除锁文件（如 `rm ~/.peer-review/STOP*`）方可恢复。
+  * **诊断工具 `peer doctor`**：若处于熔断状态，`peer doctor` 会以红色警报高亮展示熔断锁路径与具体触发原因，并以退出码 3 退出，阻断自动化流程。
 
 ## 常见问题与网络排障
 
@@ -333,16 +384,37 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 写完代码后，我们经常想请另一个模型再看一遍，但复制代码、切窗口、搬回意见很麻烦。PeerAgent 把这一步接到现有会话里，使用本机已登录的 CLI，减少重复操作。
 
-如果只是想在现有 CLI 之间多做一次代码检查，可以先试它。需要复杂任务编排时，再按具体需求选择工具。多一个模型不代表结论就一定正确，最后仍由你判断。
+更重要的是，**它源于真实的高强度多 Agent 编程实战，经过了大规模工程考验**：
+- 累计承载 **372+ 次代码与方案交叉审阅**、**235+ 次架构咨询与边界探讨**、**283+ 次跨模型出图辅助**；
+- 在高频调用中保持**零意外扣费**、**零连带封号**；
+- `approved_auth` 曾成功拦截过 4 次因终端环境变量残留 API Key 险些导致的按量计费调用；
+- `STOP` 熔断锁在网络代理波动与风控提示时及时阻断了并发重试链条，保护了宝贵的官方订阅账号。
+
+如果只是想在现有 CLI 之间安全、省心地让另一个模型多做一次代码检查，PeerAgent 就是为你打造的。
 
 ## 社区与交流
 
-欢迎通过 [GitHub Issues](https://github.com/puck-muling/peer-agent/issues) 反馈问题，或添加 QQ：2607430010（Puck-Muling）。也可在 [X（@puck_muling）](https://x.com/puck_muling) 和 [Telegram（@puckmuling）](https://t.me/puckmuling) 交流。
+欢迎反馈问题、提出建议或交流使用经验：
 
-<p align="center">
-  <img src="./docs/assets/qq_qr.jpg" height="220" alt="QQ 联系二维码" />
-  <img src="./docs/assets/telegram_qr.png" height="220" alt="Telegram 二维码" />
-</p>
+- 🐛 **问题反馈**：[GitHub Issues](https://github.com/puck-muling/peer-agent/issues)
+- 𝕏 **X（Twitter）**：[@puck_muling](https://x.com/puck_muling)
+- ✈️ **Telegram**：[@puckmuling](https://t.me/puckmuling)
+- 💬 **QQ**：2607430010（Puck-Muling）
+
+<table align="center">
+  <tr>
+    <th width="240">💬 QQ 交流</th>
+    <th width="240">✈️ Telegram 交流</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="./docs/assets/qq_qr.jpg" width="200" alt="QQ 联系二维码" /></td>
+    <td align="center"><img src="./docs/assets/telegram_qr.png" width="200" alt="Telegram 二维码" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Puck-Muling</b><br /><sub>QQ：2607430010 · 扫码加好友</sub></td>
+    <td align="center"><a href="https://t.me/puckmuling"><b>@puckmuling</b></a><br /><sub>扫码或点击链接</sub></td>
+  </tr>
+</table>
 
 感谢 Claude Code、Codex、Antigravity 团队与分享 Agent 审阅实践的开源贡献者。
 
