@@ -15,6 +15,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        # ubuntu-latest 已是 Ubuntu 26.04，actions/setup-python 不再为它提供 Python 3.9；
+        # Linux 上的 3.9 改在 ubuntu-24.04 上跑，保留最低支持版本的覆盖
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python-version: "3.9"
 
     steps:
       - name: Checkout repository
