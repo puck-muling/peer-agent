@@ -75,6 +75,8 @@ PeerAgent 的核心护城河是**将调用能力深嵌在一套坚固的防御�
 curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash
 ```
 
+> 在国内、需要代理才能上 GitHub？请直接用下面“国内网络”那一行，否则第一步下载就会失败。
+
 它会：
 
 1. 下载最新发布版本，装好 `peer` 命令和各端技能；
@@ -84,11 +86,13 @@ curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstr
 
 已经装好、登录好的不会重复处理；任何一步失败，都会直接告诉你原因和下一步怎么做。
 
-- **国内网络**：连 GitHub、Claude、OpenAI 一般都需要代理。先打开代理软件，再用下面这一行（把 7890 换成你代理软件里显示的端口）。代理也会保存给 peer（写进配置的 `child_env`），之后调用 Claude / Codex 同样会用它。
+- **国内网络**：连 GitHub、Claude、OpenAI 一般都需要代理。先打开代理软件，再用下面这一行（**两处 7890 都换成你代理软件里显示的端口**，Clash 默认一般是 7890）：
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
+  curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
   ```
+
+  开头的 `-x` 让“下载安装脚本”这一步走代理；末尾的 `--proxy` 让后面的下载、安装 Claude Code / Codex 也走代理，并保存给 peer（写进配置的 `child_env`），之后调用 Claude / Codex 同样会用它。两处缺一不可。
 
 - **想先看看脚本再运行**：
 
@@ -97,6 +101,8 @@ curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstr
   less peer-bootstrap.sh
   bash peer-bootstrap.sh
   ```
+
+  需要代理时，第一行的 `curl` 后面加 `-x http://127.0.0.1:7890`，最后一行改成 `bash peer-bootstrap.sh --proxy http://127.0.0.1:7890`。
 
 - **Mac 第一次用 Python**：如果系统弹窗要求安装“命令行开发者工具”，点【安装】，装完再运行一次上面的命令即可。
 - **Windows**：目前请先安装 WSL2，在 WSL2 的终端里运行上面的命令。
