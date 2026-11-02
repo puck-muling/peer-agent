@@ -120,7 +120,7 @@ preflight_paths() {
   # 任何 rm / ln / cp 之前统一校验，避免 PEER_HOME 指向仓库本身时删掉或自链接源文件
   case "/$PEER_HOME/" in
     */../*|*/./*)
-      echo "❌ 错误: PEER_HOME 含有 . 或 .. 路径段（$PEER_HOME），已安全终止（未删除或覆盖任何文件）。" >&2
+      echo "❌ 错误: PEER_HOME 含有 . 或 .. 路径段（${PEER_HOME}），已安全终止（未删除或覆盖任何文件）。" >&2
       echo "👉 请把 PEER_HOME 设为不含 . / .. 的绝对路径（默认 ~/.peer-review）后重试。" >&2
       exit 1
       ;;
@@ -129,7 +129,7 @@ preflight_paths() {
   home_c="$(canon_or_die "$PEER_HOME/_")" || exit 1
   repo_c="$(canon_or_die "$SCRIPT_DIR/_")" || exit 1
   if [ "$home_c" = "$repo_c" ]; then
-    echo "❌ 错误: PEER_HOME 与 PeerAgent 仓库是同一目录（$SCRIPT_DIR），已安全终止（未删除或覆盖任何文件）。" >&2
+    echo "❌ 错误: PEER_HOME 与 PeerAgent 仓库是同一目录（${SCRIPT_DIR}），已安全终止（未删除或覆盖任何文件）。" >&2
     echo "👉 请把 PEER_HOME 设为仓库以外的目录（默认 ~/.peer-review）后重试。" >&2
     exit 1
   fi
@@ -256,7 +256,7 @@ check_install_dir() {
   if [ ! -d "$probe" ]; then
     echo "❌ 错误: 安装目标路径被非目录占用，已安全终止（未删除或覆盖任何文件）。" >&2
     echo "   目标目录: $1" >&2
-    echo "   冲突路径: $probe（不是目录）" >&2
+    echo "   冲突路径: ${probe}（不是目录）" >&2
     echo "👉 请人工确认该路径用途，移走或改名后重试。" >&2
     exit 1
   fi
@@ -273,7 +273,7 @@ check_install_target() {
   # 最终目标文件不能被真实目录占用，否则 mv / ln 会把文件放进该目录而非替换它
   if [ -d "$1" ] && [ ! -L "$1" ]; then
     echo "❌ 错误: 安装目标文件被目录占用，已安全终止（未删除或覆盖任何文件）。" >&2
-    echo "   冲突路径: $1（是目录）" >&2
+    echo "   冲突路径: ${1}（是目录）" >&2
     echo "👉 请人工确认该路径用途，移走或改名后重试。" >&2
     exit 1
   fi
@@ -506,7 +506,7 @@ install_python() {
     echo "   没找到能自动安装 Python 的方式。请用系统自带的软件管理工具安装 Python 3.9 或更新版本，然后重新运行安装命令。"
     return 1
   fi
-  echo "   正在安装 Python（运行：$cmd），可能会要求输入你的电脑登录密码……"
+  echo "   正在安装 Python（运行：${cmd}），可能会要求输入你的电脑登录密码……"
   bash -c "$cmd" <"$INTERACTIVE_STDIN" && hash -r
 }
 
@@ -563,7 +563,7 @@ setup_environment() {
   ensure_local_bin_on_path
   if [ -n "$PROXY_ARG" ]; then
     if ! valid_proxy "$PROXY_ARG"; then
-      echo "❌ 代理地址的写法不对：$PROXY_ARG。应该像 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891 这样。" >&2
+      echo "❌ 代理地址的写法不对：${PROXY_ARG}。应该像 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891 这样。" >&2
       exit 2
     fi
     use_proxy "$PROXY_ARG"

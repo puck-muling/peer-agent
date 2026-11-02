@@ -50,26 +50,35 @@ if [ -z "$VERSION" ]; then
   # 最新发布版本：跟随 releases/latest 的跳转地址取版本号，不依赖 GitHub API 的调用次数限制
   latest_url="$(curl -fsSIL -m 30 -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
   VERSION="${latest_url##*/}"
+  case "$VERSION" in
+    v[0-9]*.[0-9]*.[0-9]*) ;;
+    *) fail "连不上 GitHub，查不到最新版本。" "国内网络一般需要代理：先打开代理软件，再运行（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890" ;;
+  esac
+else
+  # 用户手动指定版本：支持 0.1.3 与 v0.1.3
+  case "$VERSION" in
+    [0-9]*.[0-9]*.[0-9]*) VERSION="v$VERSION" ;;
+  esac
+  case "$VERSION" in
+    *[!A-Za-z0-9._-]*) fail "版本号的写法不对：$VERSION" "应该像 v0.1.3 这样。" ;;
+  esac
+  case "$VERSION" in
+    v[0-9]*.[0-9]*.[0-9]*) ;;
+    *) fail "版本号的写法不对：$VERSION" "应该像 v0.1.3 这样。" ;;
+  esac
 fi
-case "$VERSION" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) fail "连不上 GitHub，查不到最新版本。" "国内网络一般需要代理：先打开代理软件，再运行（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890" ;;
-esac
-case "$VERSION" in
-  *[!A-Za-z0-9._-]*) fail "版本号的写法不对：$VERSION" "应该像 v0.1.3 这样。" ;;
-esac
 
 ARCHIVE_URL="${PEER_BOOTSTRAP_ARCHIVE_URL:-https://github.com/$REPO/archive/refs/tags/$VERSION.tar.gz}"
 DEST="$PEER_HOME/src/peer-agent-$VERSION"
 if [ -f "$DEST/install.sh" ]; then
-  echo "   已经下载过 $VERSION，直接使用：$DEST"
+  echo "   已经下载过 ${VERSION}，直接使用：$DEST"
 else
   mkdir -p "$PEER_HOME/src"
   tmp="$(mktemp -d "$PEER_HOME/src/.download.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
-  echo "   版本：$VERSION（从 GitHub 下载）"
+  echo "   版本：${VERSION}（从 GitHub 下载）"
   curl -fsSL -m 300 "$ARCHIVE_URL" -o "$tmp/src.tar.gz" ||
-    fail "下载安装包失败（$ARCHIVE_URL）。" "多半是网络问题：打开代理软件后，用这一行重新安装（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890"
+    fail "下载安装包失败（${ARCHIVE_URL}）。" "多半是网络问题：打开代理软件后，用这一行重新安装（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890"
   tar -xzf "$tmp/src.tar.gz" -C "$tmp" || fail "安装包解压失败，可能没下载完整。" "请重新运行一次安装命令。"
   extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$extracted" ] && [ -f "$extracted/install.sh" ] || fail "安装包里没有找到 install.sh，下载的内容不对。" "请重新运行一次安装命令；还不行的话到 https://github.com/$REPO/issues 反馈。"
@@ -79,6 +88,6 @@ else
   trap - EXIT
 fi
 
-echo "==> 开始安装（$DEST）"
+echo "==> 开始安装（${DEST}）"
 cd "$DEST"
 exec bash ./install.sh --copy ${PASS[@]+"${PASS[@]}"}

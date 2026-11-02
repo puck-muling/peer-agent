@@ -2262,5 +2262,24 @@ class TestBootstrap(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("--version 后面要跟版本号", res.stderr)
 
+    def test_version_without_v_and_invalid_format(self):
+        # 允许无 v 前缀版本号自动规范化
+        res = self.run_bootstrap("--version", "9.9.9", "--no-install-deps")
+        self.assertIn(res.returncode, (0, 2), res.stdout + res.stderr)
+        self.assertIn("v9.9.9", res.stdout)
+        # 非法版本号明确提示格式错误，而非误判为网络失败
+        res_inv = self.run_bootstrap("--version", "invalid_tag", "--no-install-deps")
+        self.assertEqual(res_inv.returncode, 1)
+        self.assertIn("版本号的写法不对", res_inv.stderr)
+
+    def test_shell_scripts_avoid_unbraced_variables_before_multibyte(self):
+        import re
+        for script_name in ("bootstrap.sh", "install.sh"):
+            script_path = os.path.join(REPO_DIR, script_name)
+            with open(script_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            bad_vars = re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)([\u0080-\uffff])", content)
+            self.assertEqual(bad_vars, [], f"{script_name} 中存在紧邻非 ASCII 字符的未加花括号变量，在 macOS bash 3.2 set -u 下会报错")
+
 if __name__ == "__main__":
     unittest.main()
