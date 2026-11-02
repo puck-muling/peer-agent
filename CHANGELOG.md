@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-02
+
+### Fixed
+- **New terminals could not find `peer` after a one-line install (`install.sh`)**: the installer adds `~/.local/bin` to `PATH` for its own run so freshly installed tools work at once, and then mistook that for an existing setup, skipping the line it writes to `~/.zshrc` / `~/.bashrc`. It now decides based on the `PATH` it was started with. Found by running the published one-line installer in a clean home directory.
+
 ## [0.1.3] - 2026-11-02
 
 ### Added

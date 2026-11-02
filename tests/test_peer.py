@@ -2197,6 +2197,14 @@ class TestOneClickInstall(unittest.TestCase):
         self.assertEqual(self.config()["child_env"], {"HTTPS_PROXY": "http://10.0.0.1:1"})
         self.assertIn("保持不变", res.stdout)
 
+    def test_shell_path_is_configured_for_new_terminals(self):
+        """安装中临时加进 PATH 的 ~/.local/bin 不能让脚本误以为已配置好：原始 PATH 没有时要写进 shell 配置。"""
+        res = self.run_install("--no-install-deps")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        with open(os.path.join(self.home, ".bashrc"), encoding="utf-8") as f:
+            self.assertIn('export PATH="$HOME/.local/bin:$PATH"', f.read())
+        self.assertNotIn("已在系统 PATH 中", res.stdout)
+
     def test_failed_official_install_is_explained(self):
         res = self.run_install(answers="\n", extra_env={"PEER_TEST_CLAUDE_INSTALL_CMD": "echo boom >&2; exit 7"})
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
