@@ -10,14 +10,15 @@ PeerAgent strictly categorizes tasks into two permission tiers:
 
 ### Read-Only Modes (`review`, `plan`, `advice`)
 * **Codex**: Executed with `--sandbox read-only`. Filesystem writes are physically prevented by the sandbox.
-* **Claude**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable.
+* **Claude**: Executed with write tools disabled (`Edit`, `Write` disallowed). File modification permissions are denied (`Edit(~/**)`, `Edit(./**)`). Bash commands are executed in a sandboxed, network-isolated shell where only `$TMPDIR` is writable. Web tools (`WebSearch`, `WebFetch`) are allowed by default so Claude can check facts online. **Caution**: prompt injection in reviewed material could use them to send out what the model has read (including secrets in the project). When reviewing external or untrusted code, or when you do not need web access, set `claude_read_web: false` in `config.json` or pass `peer ask --no-web`; `peer doctor` reports the current setting.
 * **Guarantee**: A read-only review task operates under strict read-only constraints to inspect and report findings without mutating project files.
 
 ### Write Modes (`exec`, `image`)
-* **Explicit Human Quoting**: Write calls require `--quote "<Human Exact Command>"`. PeerAgent refuses to launch write actions based on vague inferences.
+* **Quoted Request**: Write calls require a non-empty `--quote` with the user's words. PeerAgent only checks that it is present; it does not judge the scope of authorization. The slash skills use writable mode only for an explicit leading `exec` or a clear edit instruction (questions and requests for explanation stay read-only), and the prompt passes the quote on as the caller's relay of the user's words — it does not claim the user has approved anything. The executor is told to change nothing when the quote does not clearly ask for a change.
 * **Pre-Execution Snapshot**: Before any write task begins, PeerAgent records an in-memory/filesystem snapshot of text files (up to 2MB each, up to 300MB total) in the target workspace, intentionally excluding `.git`, `node_modules`, `venv`, binary files, and sensitive credentials (`.env`, `*.key`, etc.). This acts as a targeted change-tracking baseline rather than a complete disk backup.
 * **Automated Diff Tracking**: When the write task finishes, PeerAgent diffs the workspace against the snapshot and generates `changes.diff` and `changes.md` for human review.
-* **Caution**: In `exec` mode, agents (specifically Claude) may execute shell commands permitted within its normal operating profile. Never launch untrusted code generation on sensitive production servers without human inspection.
+* **Write Sandbox**: Codex runs with `--sandbox workspace-write`. Claude's Bash runs in the Claude sandbox by default (writes allowed only in the project, `--add-dir` directories and `$TMPDIR`; no network; no fallback to unsandboxed execution), and Edit / Write are auto-approved only inside the project and `--add-dir` directories — edits elsewhere need a permission that a headless call cannot grant, so they are denied. Existing Claude settings that weaken the sandbox (`sandbox.excludedCommands`, `sandbox.filesystem.disabled`) make the call refuse to start. `claude_exec_sandbox: false` disables the Bash sandbox for write calls; only do this after weighing the risk.
+* **Caution**: Even inside the project, an `exec` agent can change or delete files. Never launch untrusted code generation on sensitive production servers without human inspection.
 
 ---
 

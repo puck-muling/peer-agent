@@ -89,61 +89,8 @@ $ARGUMENTS
      exit 4
    fi
 
-   # 3. 安全提取意图与任务原文（通过 Python 安全读取文件，完全免疫 shell 命令注入）
-   PARSED_JSON=$(python3 -c '
-import sys, json, re
-
-req_file = sys.argv[1]
-with open(req_file, "r", encoding="utf-8", errors="replace") as f:
-    content = f.read()
-
-lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
-raw = " ".join(lines)
-raw_l = raw.lower()
-first_word = raw.split()[0].lower() if raw.split() else ""
-
-# 优先级 1: 否定/严格只读词，允许否定词与修改词间隔对象和修饰语。
-# 邻近检测不跨句读；采用保守只读路由，避免否定句被误升级为可写。
-edit_words = ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "修掉", "改一下"]
-has_edit_word = any(w in raw_l for w in edit_words)
-is_negated_readonly = any(w in raw_l for w in [
-    "只读", "仅审阅", "仅查看", "仅分析", "仅排查", "不要改", "不要修改",
-    "无需修改", "不用修改", "不得修改", "严禁修改", "禁止修改", "请勿修改",
-    "不修改", "只查", "只看", "评估", "是否需要", "是否应当"
-]) or bool(re.search(
-    r"(?:不要|不许|请勿|严禁|禁止|不得|无需|不用|不能|不可|不准|不|别|勿)"
-    r"[^，。；！？,;.!?\n]{0,16}(?:修改|改动|编辑|写入|创建|新建|修复|重构|编写|改)", raw_l
-)) or bool(re.search(
-    r"\b(?:do\s+not|don\x27t|never|without)\b[^,;.!?\n]{0,40}"
-    r"\b(?:modify|modifying|edit|editing|change|changing|write|writing|fix|fixing)\b", raw_l
-))
-
-# 优先级 2: 强只读动词，高于任何修改词（“审阅当前修改”、“检查修复结果”必须是 review，不得升级为 exec）
-has_review_verb = any(w in raw_l for w in [
-    "审阅", "排查", "检查", "查看", "看看", "核查", "核实", "复核", "审查", "审计"
-]) or bool(re.search(r"\b(?:review|inspect|audit|diff|check)\b", raw_l))
-
-if first_word in ("exec", "review", "plan", "advice", "image"):
-    # 显式子命令除 exec 外直接匹配；若写了 exec 但紧接着有否定词，安全降级为 review
-    kind = "review" if (first_word == "exec" and is_negated_readonly) else first_word
-elif is_negated_readonly or has_review_verb:
-    kind = "review"
-elif any(w in raw_l for w in ["出方案", "出计划", "设计方案", "怎么做", "出个计划", "重构方案", "方案", "计划"]):
-    kind = "plan"
-elif any(w in raw_l for w in ["生图", "生成图片", "出图", "画一张", "做一张", "出海报", "做立绘"]):
-    kind = "image"
-elif has_edit_word:
-    kind = "exec"
-elif any(w in raw_l for w in ["为什么", "怎么看", "分析一下", "给个建议", "给个结论", "结论", "建议"]):
-    kind = "advice"
-else:
-    kind = "review"
-
-if kind == "review" and (first_word == "exec" or has_edit_word):
-    print("【提示】已按只读处理；要修改请以 exec 开头，并去掉相冲突的只读或禁止修改要求。", file=sys.stderr)
-
-print(json.dumps({"kind": kind, "quote": raw[:300]}, ensure_ascii=False))
-' "$REQ_FILE")
+   # 3. 识别任务类型与授权原话：统一由 peer route 判定（三端共用同一套规则），只传文件路径，不经过 Shell 拼接原文
+   PARSED_JSON=$("$PEER_BIN" route --request "$REQ_FILE") || exit $?
 
    KIND=$(python3 -c "import json, sys; print(json.loads(sys.argv[1])['kind'])" "$PARSED_JSON")
    QUOTE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1])['quote'])" "$PARSED_JSON")

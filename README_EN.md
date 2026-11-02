@@ -132,13 +132,14 @@ Check the reported location and trigger before deciding to edit. A second model 
 
 ### Review, planning, and execution
 
-Slash skills use keyword-based intent routing. It is a heuristic, not a complete understanding of natural language. The following order applies to **the `/codex` skill in Claude Code**:
+Slash skills use keyword-based intent routing. It is a heuristic, not a complete understanding of natural language. All skills (`/codex` in Claude Code, `/claude` in Codex, and `/codex` / `/claude` in Antigravity) call the same `peer route --request <task file>`, so the rules are identical across hosts; when the task file has a "# 任务" section, only that section is considered. Order:
 
 1. An explicit leading `exec` / `review` / `plan` / `advice` / `image` selects that type; `exec` is downgraded to `review` when a read-only or no-edit requirement is detected.
 2. Without an explicit type, recognized negative phrases and review verbs take precedence over edit verbs. For example, reviewing changes or checking a fix stays a review.
 3. The remaining checks match plan, image, edit, and advice phrases in that order, with `review` as the fallback. Phrase coverage varies by language; use an explicit type when possible.
+4. Questions and requests for explanation (a question mark, a sentence-final 吗 / 呢, or words such as 什么 / 怎么 / 是否 / 解释 / 原理) never become writable `exec`, even when they contain edit words such as 实现 / 修复 / 创建; they are routed to `advice`. Polite requests phrased as questions (“能帮我修复这个 bug 吗”) also stay read-only; start with `exec` or phrase it as an instruction to edit.
 
-The `/claude` skill in Codex and the Antigravity skills use different classification rules; do not assume identical precedence across hosts. Check the corresponding skill and actual call type. To select a type deterministically, use direct `peer ask`, which bypasses slash-skill intent routing.
+To select a type deterministically, use direct `peer ask`, which bypasses slash-skill intent routing; `peer route` shows how a given task file would be classified.
 
 `review`, `plan`, and `advice` use read-only execution settings. `exec` and `image` can write and require a user authorization quote. Specify allowed files clearly and check the submitted task type.
 
@@ -202,13 +203,14 @@ This assumes the first freeze of that document; use the filename printed by the 
 | :--- | :--- |
 | `peer doctor` | `[--approve]`: inspect environment and safety locks (CLI status, login consistency, and STOP circuit breaker); explicitly approving records currently recognized login categories as the new baseline |
 | `peer ask <codex\|claude> <kind>` | `--request <file> --cwd <dir>`; `kind`: `review` / `plan` / `advice` / `exec` / `image`; `image` is Codex-only |
-| Optional call arguments | `--quote <text>`, `--model <model>`, `--effort <effort>`, `--service-tier <tier>`, `--add-dir <dir>`, `--caller <name>`, `--foreground`; write types require `--quote` |
+| Optional call arguments | `--quote <text>`, `--model <model>`, `--effort <effort>`, `--service-tier <tier>`, `--add-dir <dir>`, `--caller <name>`, `--foreground`, `--web` / `--no-web` (allow / block WebSearch / WebFetch for this read-only Claude call; allowed by default); write types require `--quote` |
 | `peer wait <run_id>` | `--cwd <dir> [--timeout <seconds>]`: wait for the original run and show the report |
 | `peer status [run_id]` | `--cwd <dir>`: inspect a run or the latest 10 runs |
 | `peer freeze <plan>` | `--cwd <dir> [--quote <text>] [--review-receipt <dir>]`: save a frozen copy and fingerprint |
 | `peer verify <frozen>` | Compare the frozen copy with its recorded SHA-256 |
 | `peer since-freeze <frozen>` | Compare the project with its freeze snapshot and generate change records |
 | `peer stats` | Show daily calls and available usage data, not an official billing statement |
+| `peer route` | `--request <file>`: classify a task file and print `{"kind", "quote"}`; shared by all skills |
 
 </details>
 
@@ -217,14 +219,15 @@ This assumes the first freeze of that document; use the filename printed by the 
 | Mechanism | What it does | Limits |
 | :--- | :--- | :--- |
 | Login-category check (`approved_auth`) | Compares the current category with `approved_auth`; mismatch stops the call with exit code 3; managed via `peer doctor [--approve]` | Does not verify authorization scope, remaining credit, or final charges. Subscription calls consume quota; API logins follow their billing rules |
-| Read-only tasks | Sets Codex's `read-only` sandbox; restricts Claude tools and Bash sandbox permissions; requests read-only behavior in the prompt | Depends on the target CLI and system sandbox. PeerAgent still writes task files and logs; the machine is not entirely write-free |
+| Read-only tasks | Sets Codex's `read-only` sandbox; restricts Claude tools and Bash sandbox permissions, with WebSearch / WebFetch allowed by default for research (turn off with `claude_read_web: false` or `--no-web`); requests read-only behavior in the prompt | Depends on the target CLI and system sandbox. PeerAgent still writes task files and logs; the machine is not entirely write-free |
 | Write authorization | Requires a nonempty quote for `exec` / `image` and uses write settings | A quote does not mean the program understands its scope; people and the executor must check it |
+| Write sandbox | Codex uses the `workspace-write` sandbox; Claude's Bash is sandboxed by default (writes only to the project, `--add-dir` directories and `$TMPDIR`, no network), and Edit / Write are auto-approved only inside the project and `--add-dir` directories | Tasks that need network access (e.g. installing dependencies) or writes outside the project fail; set `claude_exec_sandbox: false` to run without the sandbox after weighing the risk |
 | Pre-run snapshot | Copies eligible text content, records file information, and compares afterward | Skips some directories and suspected secrets; size, binary, and total-copy limits apply. Not a full backup or automatic rollback |
 | Recursion marker | Inherited `PEER_DEPTH` causes nested `peer ask` calls to exit with code 2 | Covers this entry point with its marker intact, not every possible agent loop |
 | STOP circuit breaker (`STOP`) | Blocks later calls on a channel after detecting fatal ban or region errors; managed via `peer doctor` and manual killswitch / reset | Depends on error matching and cannot guarantee account protection. Investigate manually; AI agents are strictly forbidden from removing STOP files |
 | Independent-review instructions | Ask reviewers to inspect source, requirements, and diffs before judging claims | Do not guarantee correctness, independence, or consensus |
 
-Snapshots skip directories such as `.git`, `node_modules`, and `.peer-review`. Text files over 2 MiB are not copied; files over 64 MiB only have size and modification time recorded. Total copied content is capped at 300 MiB and file count at 40,000. See [`bin/peer`](./bin/peer) for details and [SECURITY.md](./SECURITY.md) for the security model.
+Snapshots skip directories such as `.git`, `node_modules`, and `.peer-review`. Text files over 2 MiB are not copied; files over 8 MiB only have size and modification time recorded. When comparing, files whose size and modification time are unchanged reuse the snapshot fingerprint instead of being re-hashed (the same check git uses). Total copied content is capped at 300 MiB and file count at 40,000. See [`bin/peer`](./bin/peer) for details and [SECURITY.md](./SECURITY.md) for the security model.
 
 ### Core safety locks and tools: silent billing prevention & fatal ban circuit breaker
 
@@ -233,7 +236,7 @@ When running multi-agent workflows autonomously, developers face two major risks
 #### 1. `approved_auth` Authentication Mode Lock (Silent Billing Prevention)
 
 * **Interception mechanism**: Before sending any prompt (`peer ask`), PeerAgent queries the target CLI's actual login state and inspects active environment variables. It verifies that the current mode (`subscription` / `api` / `unknown`) matches `approved_auth` in your configuration (defaulting to `subscription`).
-* **Why it prevents silent charges**: If you use Claude Pro or ChatGPT Plus subscriptions but an environment variable (e.g. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is accidentally injected, or if a subscription session expires into pay-as-you-go API credits, PeerAgent detects that the current login state no longer matches the approved mode (`approved_auth`) and **blocks the call and exits with code 3 before invoking the CLI**, printing the mismatch and refusing to execute. It only compares login categories; it does not verify authorization scope, remaining credit, or final charges.
+* **Why it prevents silent charges**: If you use Claude Pro or ChatGPT Plus subscriptions but the CLI session expires or is switched to pay-as-you-go API credits, PeerAgent detects that the current login state no longer matches the approved mode (`approved_auth`) and **blocks the call and exits with code 3 before invoking the CLI**, printing the mismatch and refusing to execute. Environment keys are handled the same way for both agents: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `CODEX_API_KEY` are only stripped from the child environment with a hint; the login category is whatever the official CLI reports in that same (key-free) environment, so a leftover key neither changes the category nor blocks the call. It only compares login categories; it does not verify authorization scope, remaining credit, or final charges.
 * **Management tools**:
   * **Diagnostic tool `peer doctor`**: Inspects each CLI's detected login mode against `approved_auth` (displaying `✅ matches approved baseline` or `⚠️ mismatch`).
   * **Approval tool `peer doctor --approve`**: When you intentionally switch to official API keys and accept the billing implications, explicitly run this command to record the new baseline. AI agents are strictly forbidden from invoking `--approve` automatically.
@@ -318,7 +321,10 @@ Default config: `~/.peer-review/config.json`. Use `PEER_CONFIG` for another path
     "write": 60
   },
   "proxy_check": null,
-  "codex_disable_apps": false
+  "codex_disable_apps": false,
+  "claude_read_web": true,
+  "child_env": {},
+  "claude_exec_sandbox": true
 }
 ```
 
@@ -334,6 +340,9 @@ Default config: `~/.peer-review/config.json`. Use `PEER_CONFIG` for another path
 | `timeout_minutes` | Maximum read/write task duration in minutes before terminating the child; does not establish that a remote request was not processed |
 | `proxy_check` | Optional `[host, port]` TCP check; does not configure a proxy |
 | `codex_disable_apps` | Pass a setting to disable Codex Apps; default `false`, separately disabled for image tasks |
+| `claude_read_web` | Whether read-only Claude calls get WebSearch / WebFetch; default `true`. ⚠️ When reviewing external or untrusted code, or projects containing secrets, prompt injection in the reviewed material could use web tools to send out what the model has read; set it to `false` if you do not need web access, or pass `peer ask --no-web` per call. `peer doctor` shows the current setting |
+| `child_env` | Extra environment variables for the Claude / Codex child processes, e.g. `{"HTTPS_PROXY": "http://127.0.0.1:7890"}`. peer runs the CLI binaries directly, bypassing shell functions or aliases, and apps launched from the desktop may not inherit terminal proxies. Billing-related variables (`ANTHROPIC_*`, `OPENAI_API_KEY`, ...) are refused. `peer doctor` shows names only |
+| `claude_exec_sandbox` | Whether Claude's Bash runs in the sandbox for write calls; default `true` (writes only to the project, `--add-dir` directories and `$TMPDIR`, no network — same as Codex). `false` runs without the sandbox, and `peer doctor` warns about it |
 
 To fix effort at high while retaining model inheritance, merge this fragment:
 
@@ -359,7 +368,7 @@ If intentionally switching to an official API login, complete and confirm it in 
 
 | Component | Path and description |
 | :--- | :--- |
-| Core coordinator | [`bin/peer`](./bin/peer), currently 2,248 lines, Python standard library only, no persistent daemon |
+| Core coordinator | [`bin/peer`](./bin/peer), currently 2,541 lines, Python standard library only, no persistent daemon |
 | CLI adaptation skills | [`skills/`](./skills/), for Claude Code, Codex, and Antigravity; not official vendor products |
 | Task templates | [`templates/`](./templates/), 5 files: `review.md`, `plan.md`, `advice.md`, `exec.md`, `image.md` |
 | Installer | [`install.sh`](./install.sh), file copies by default; symlinks are opt-in |
