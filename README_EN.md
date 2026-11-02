@@ -10,7 +10,7 @@ Ask another model to check your code from your current session and bring the fin
 
 Local official CLIs · Existing subscriptions supported · Read-only reviews · Silent billing lock · Fatal ban circuit breaker · Python stdlib only
 
-> 🧪 **0.1.4 public preview**: PeerAgent is in its trial phase, and feedback is welcome. Report problems or suggestions in [GitHub Issues](https://github.com/puck-muling/peer-agent/issues).
+> 🧪 **0.1.5 public preview**: PeerAgent is in its trial phase, and feedback is welcome. Report problems or suggestions in [GitHub Issues](https://github.com/puck-muling/peer-agent/issues).
 
 [Install and try it](#install-and-try-it) · [Ecosystem positioning & comparison](#ecosystem-positioning--comparison) · [Usage examples](#usage-examples) · [Costs and permission boundaries](#costs-and-permission-boundaries) · [Troubleshooting and network FAQ](#troubleshooting-and-network-faq)
 

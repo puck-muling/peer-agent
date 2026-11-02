@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peer-agent"
-version = "0.1.4"
+version = "0.1.5"
 description = "让 Claude 与 Codex 帮彼此审代码 —— 订阅原生的对等多智能体交叉审阅 CLI (Connecting Claude, Codex, and Antigravity)"
 readme = "README.md"
 requires-python = ">=3.9"
