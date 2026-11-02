@@ -58,7 +58,7 @@ import threading
 import time
 
 # ---------------------------------------------------------------- 基本设置
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 HOME = os.path.expanduser("~")
 # 用 realpath 解析软链接安装（~/.local/bin/peer -> 仓库），才能找到仓库内 templates/
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))

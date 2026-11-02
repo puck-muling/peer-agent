@@ -284,7 +284,9 @@ class TestPeerExtended(unittest.TestCase):
         # --version
         res_ver = subprocess.run([sys.executable, bin_path, "--version"], capture_output=True, text=True)
         self.assertEqual(res_ver.returncode, 0)
-        self.assertIn("peer 0.1.1", res_ver.stdout)
+        self.assertIn("peer " + peer.VERSION, res_ver.stdout)
+        with open(os.path.join(REPO_DIR, "pyproject.toml"), encoding="utf-8") as f:
+            self.assertIn('version = "%s"' % peer.VERSION, f.read(), "pyproject.toml 与 peer 的版本号必须一致")
 
         # stats
         res_stats = subprocess.run([sys.executable, bin_path, "stats"], capture_output=True, text=True)
