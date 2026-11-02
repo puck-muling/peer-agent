@@ -794,7 +794,7 @@ configure_path_if_needed() {
     echo "提示: 非登录、非交互 shell 未必读取 ~/.profile；此时可使用 $LOCAL_BIN/peer。"
   fi
 
-  if [[ ":$ORIGINAL_PATH:" == *":$LOCAL_BIN:"* ]]; then
+  if [[ ":${ORIGINAL_PATH:-$PATH}:" == *":$LOCAL_BIN:"* ]]; then
     echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
     return
   fi
