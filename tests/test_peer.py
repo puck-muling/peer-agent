@@ -493,24 +493,42 @@ class TestPeerExtended(unittest.TestCase):
             self.assertEqual(f.read().count('export PATH="$HOME/.local/bin:$PATH"'), 1)
 
     def test_installer_old_python_guidance_matches_platform(self):
-        """模拟 Python 3.9，分别检查 Linux 与 macOS 的提示及失败退出码。"""
-        with open(os.path.join(REPO_DIR, "install.sh"), encoding="utf-8") as f:
-            source = f.read()
-        check = source[source.index('PY_VER='):source.index('echo "   Python 版本:')]
-        stub = 'python3() { if [[ "$2" == *"print(1 if"* ]]; then echo 0; else echo 3.9; fi; }\n'
+        """Python 版本太旧且不自动安装时：退出码 1，用大白话说明，并按系统给出安装方法。"""
+        repo = os.path.join(self.test_dir, "repo")
+        os.makedirs(os.path.join(repo, "bin"))
+        for name in ("install.sh", "config.example.json"):
+            shutil.copy2(os.path.join(REPO_DIR, name), os.path.join(repo, name))
+        for name in ("templates", "skills"):
+            shutil.copytree(os.path.join(REPO_DIR, name), os.path.join(repo, name))
+        shutil.copy2(os.path.join(REPO_DIR, "bin", "peer"), os.path.join(repo, "bin", "peer"))
         for system in ("Linux", "Darwin"):
             with self.subTest(system=system):
-                script = 'set -eu\nuname() { echo ' + system + '; }\n' + stub + check
-                res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-                self.assertEqual(res.returncode, 1, res.stderr)
-                self.assertIn("3.9", res.stderr)
+                tool_bin = os.path.join(self.test_dir, "oldpy-" + system)
+                os.makedirs(tool_bin)
+                with open(os.path.join(tool_bin, "python3"), "w", encoding="utf-8") as f:
+                    f.write('#!/bin/sh\ncase "$*" in *"(3, 9)"*) exit 1 ;; *python_version*) echo 3.8.10 ;; '
+                            '*) exec "%s" "$@" ;; esac\n' % sys.executable)
+                with open(os.path.join(tool_bin, "uname"), "w", encoding="utf-8") as f:
+                    f.write("#!/bin/sh\necho %s\n" % system)
+                for n in ("python3", "uname"):
+                    os.chmod(os.path.join(tool_bin, n), 0o755)
+                home = os.path.join(self.test_dir, "home-" + system)
+                os.makedirs(home)
+                env = {"HOME": home, "SHELL": "/bin/bash", "PATH": tool_bin + ":/usr/bin:/bin",
+                       "PEER_HOME": os.path.join(home, ".peer-review")}
+                res = subprocess.run(["bash", os.path.join(repo, "install.sh"), "--no-install-deps"],
+                                     env=env, capture_output=True, start_new_session=True, text=True, cwd=repo)
+                self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+                self.assertIn("版本太旧（3.8.10）", res.stdout)
+                self.assertIn("需要 3.9 或更新版本", res.stderr)
+                self.assertFalse(os.path.exists(os.path.join(home, ".local", "bin", "peer")), "Python 不可用时不应继续安装")
                 if system == "Linux":
-                    for tool in ("apt", "dnf", "pacman", "pyenv", "uv"):
-                        self.assertIn(tool, res.stderr)
-                    self.assertNotIn("brew", res.stderr)
-                    self.assertNotIn("downloads/macos", res.stderr)
+                    for tool in ("apt-get", "dnf", "pacman"):
+                        self.assertIn(tool, res.stdout)
+                    self.assertNotIn("brew", res.stdout)
                 else:
-                    self.assertIn("brew install python", res.stderr)
+                    self.assertIn("xcode-select --install", res.stdout)
+                    self.assertIn("brew install python", res.stdout)
 
     SKILL_HOSTILE_INPUTS = [
         # 多行：旧版注释行里的 $ARGUMENTS 被替换后，第二行起会逃逸成裸露命令
@@ -863,7 +881,7 @@ class TestHardeningFixes(unittest.TestCase):
         env = {"HOME": home, "SHELL": "/bin/bash", "PATH": tool_bin + ":/usr/bin:/bin",
                "PEER_HOME": peer_home or os.path.join(home, ".peer-review")}
         res = subprocess.run(["bash", os.path.join(repo, "install.sh")] + list(args),
-                             env=env, capture_output=True, text=True, cwd=repo)
+                             env=env, capture_output=True, start_new_session=True, text=True, cwd=repo)
         return res, home
 
     def test_installer_refuses_peer_home_equal_to_repo(self):
@@ -1034,9 +1052,9 @@ class TestHardeningFixes(unittest.TestCase):
                 self.assertEqual(res.returncode, rc, res.stdout + res.stderr)
                 self.assertIn("doctor-stub", res.stdout)
                 if rc == 3:
-                    self.assertIn("熔断停机锁", res.stdout)
+                    self.assertIn("暂停调用来保护账号", res.stdout)
                 elif rc:
-                    self.assertIn("退出码 %d" % rc, res.stdout)
+                    self.assertIn("还有几项没就绪", res.stdout)
                 shutil.rmtree(repo)
                 shutil.rmtree(home)
 
@@ -1046,7 +1064,11 @@ class TestHardeningFixes(unittest.TestCase):
         out = res.stdout
         native = "curl -fsSL https://claude.ai/install.sh | bash"
         self.assertIn(native, out)
-        self.assertIn("brew install --cask claude-code", out)
+        # Homebrew 只在 macOS 上提示
+        if sys.platform == "darwin":
+            self.assertIn("brew install --cask claude-code", out)
+        else:
+            self.assertNotIn("brew", out)
         # 每一处 npm 备选都必须排在原生安装命令之后
         npm = "npm install -g @anthropic-ai/claude-code"
         pos = 0
@@ -1995,6 +2017,242 @@ class TestMediumPriorityFixes(unittest.TestCase):
         self.assertEqual(env["PEER_DEPTH"], "2")
         self.assertEqual(peer.child_env_extra({})[0], {})
 
+
+
+FAKE_CLAUDE = """#!/bin/sh
+case "$1 $2" in
+  "auth status") if [ -f "$HOME/.fake-claude-login" ]; then echo '{"loggedIn": true, "authMethod": "claude.ai"}'; else echo '{"loggedIn": false}'; fi ;;
+  "auth login") touch "$HOME/.fake-claude-login"; echo "fake claude login" ;;
+  *) echo "9.9.9 (Claude Code)" ;;
+esac
+"""
+
+FAKE_CODEX = """#!/bin/sh
+case "$1 $2" in
+  "login status") if [ -f "$HOME/.fake-codex-login" ]; then echo "Logged in using ChatGPT"; else echo "Not logged in"; exit 1; fi ;;
+  "login ") touch "$HOME/.fake-codex-login"; echo "fake codex login" ;;
+  *) echo "codex-cli 9.9.9" ;;
+esac
+"""
+
+
+class TestOneClickInstall(unittest.TestCase):
+    """一键安装：先检测、列出要做的事，按回车就自动安装缺的 CLI、引导登录、设置代理；没有终端时不安装。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = os.path.realpath(tmp.name)
+        self.repo = os.path.join(self.test_dir, "repo")
+        os.makedirs(os.path.join(self.repo, "bin"))
+        for name in ("install.sh", "config.example.json"):
+            shutil.copy2(os.path.join(REPO_DIR, name), os.path.join(self.repo, name))
+        for name in ("templates", "skills"):
+            shutil.copytree(os.path.join(REPO_DIR, name), os.path.join(self.repo, name))
+        with open(os.path.join(self.repo, "bin", "peer"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho doctor-stub\nexit 0\n")
+        os.chmod(os.path.join(self.repo, "bin", "peer"), 0o755)
+        self.home = os.path.join(self.test_dir, "home")
+        os.makedirs(self.home)
+        self.tool_bin = os.path.join(self.test_dir, "toolbin")
+        os.makedirs(self.tool_bin)
+        os.symlink(sys.executable, os.path.join(self.tool_bin, "python3"))
+        self.fakes = os.path.join(self.test_dir, "fakes")
+        os.makedirs(self.fakes)
+        for name, body in (("claude", FAKE_CLAUDE), ("codex", FAKE_CODEX)):
+            p = os.path.join(self.fakes, name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(p, 0o755)
+        self.install_log = os.path.join(self.test_dir, "install.log")
+
+    def fake_install_cmd(self, name):
+        # 代替官方安装脚本：把假程序放进 ~/.local/bin，并记一笔
+        return 'mkdir -p "$HOME/.local/bin" && cp "%s" "$HOME/.local/bin/%s" && echo %s >> "%s"' % (
+            os.path.join(self.fakes, name), name, name, self.install_log)
+
+    def preinstall(self, name, logged_in=True):
+        d = os.path.join(self.home, ".local", "bin")
+        os.makedirs(d, exist_ok=True)
+        shutil.copy2(os.path.join(self.fakes, name), os.path.join(d, name))
+        if logged_in:
+            open(os.path.join(self.home, ".fake-%s-login" % name), "w").close()
+
+    def run_install(self, *args, answers=None, net="ok", extra_env=None):
+        env = {"HOME": self.home, "SHELL": "/bin/bash", "PATH": self.tool_bin + ":/usr/bin:/bin",
+               "PEER_HOME": os.path.join(self.home, ".peer-review"), "PEER_TEST_MODE": "1", "PEER_TEST_NET": net,
+               "PEER_TEST_CLAUDE_INSTALL_CMD": self.fake_install_cmd("claude"),
+               "PEER_TEST_CODEX_INSTALL_CMD": self.fake_install_cmd("codex")}
+        if answers is not None:
+            p = os.path.join(self.test_dir, "answers.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(answers)
+            env["PEER_INSTALL_INPUT"] = p
+        env.update(extra_env or {})
+        return subprocess.run(["bash", os.path.join(self.repo, "install.sh")] + list(args),
+                              env=env, capture_output=True, start_new_session=True, text=True, cwd=self.repo, timeout=120)
+
+    def installed(self):
+        if not os.path.exists(self.install_log):
+            return []
+        with open(self.install_log, encoding="utf-8") as f:
+            return f.read().split()
+
+    def config(self):
+        with open(os.path.join(self.home, ".peer-review", "config.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_without_terminal_detects_but_installs_nothing(self):
+        res = self.run_install()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("❌ Claude Code", res.stdout)
+        self.assertIn("不会自动安装", res.stdout)
+        self.assertIn("curl -fsSL https://claude.ai/install.sh | bash", res.stdout)
+        self.assertIn("curl -fsSL https://chatgpt.com/codex/install.sh | sh", res.stdout)
+        self.assertEqual(self.installed(), [])
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".local", "bin", "peer")))
+
+    def test_enter_installs_missing_and_logs_in(self):
+        res = self.run_install(answers="\n")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("接下来会自动帮你完成", res.stdout)
+        self.assertEqual(sorted(self.installed()), ["claude", "codex"])
+        self.assertIn("✅ Claude Code 装好了", res.stdout)
+        self.assertIn("✅ Codex 装好了", res.stdout)
+        self.assertIn("✅ Claude 已登录", res.stdout)
+        self.assertIn("✅ Codex 已登录", res.stdout)
+        self.assertIn("/codex 帮我审一下", res.stdout)
+
+    def test_only_missing_parts_are_handled(self):
+        """已装好、已登录的不再动：只补装缺的那一个。"""
+        self.preinstall("claude")
+        res = self.run_install(answers="\n")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("✅ Claude Code（在 Codex 里用 /claude 需要它）：已安装，已登录", res.stdout)
+        self.assertEqual(self.installed(), ["codex"])
+        self.assertNotIn("【登录 Claude】", res.stdout)
+
+    def test_everything_ready_asks_nothing(self):
+        self.preinstall("claude")
+        self.preinstall("codex")
+        res = self.run_install(answers="")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("一切就绪", res.stdout)
+        self.assertNotIn("按【回车】开始", res.stdout)
+        self.assertEqual(self.installed(), [])
+
+    def test_answer_n_skips_and_shows_manual_steps(self):
+        res = self.run_install(answers="n\n")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("跳过自动安装", res.stdout)
+        self.assertIn("需要你手动完成的事", res.stdout)
+        self.assertEqual(self.installed(), [])
+
+    def test_logged_out_cli_is_only_logged_in(self):
+        self.preinstall("claude", logged_in=False)
+        self.preinstall("codex")
+        res = self.run_install(answers="\n")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("⚠️  Claude Code（在 Codex 里用 /claude 需要它）：已安装，还没登录", res.stdout)
+        self.assertEqual(self.installed(), [])
+        self.assertIn("✅ Claude 已登录", res.stdout)
+
+    def test_network_failure_asks_for_proxy_and_saves_it(self):
+        self.preinstall("claude")
+        self.preinstall("codex")
+        res = self.run_install(answers="\nnot-a-proxy\nhttp://127.0.0.1:7890\n", net="fail")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("连不上 Claude / OpenAI", res.stdout)
+        self.assertIn("写法不对", res.stdout)
+        self.assertIn("用这个代理能连上了", res.stdout)
+        env = self.config()["child_env"]
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7890")
+        self.assertEqual(env["http_proxy"], "http://127.0.0.1:7890")
+        self.assertNotIn("ALL_PROXY", env)
+
+    def test_install_deps_flag_without_terminal(self):
+        """--install-deps：不问直接装；没有终端时无法登录，给出自己登录的命令。"""
+        res = self.run_install("--install-deps")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(sorted(self.installed()), ["claude", "codex"])
+        self.assertIn("没法打开登录页面", res.stdout)
+        self.assertIn("claude auth login", res.stdout)
+
+    def test_proxy_flag(self):
+        res = self.run_install("--proxy", "bad proxy")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("代理地址的写法不对", res.stderr)
+        res = self.run_install("--no-install-deps", "--proxy", "socks5://127.0.0.1:7891")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        env = self.config()["child_env"]
+        self.assertEqual(env["ALL_PROXY"], "socks5://127.0.0.1:7891")
+        self.assertEqual(env["HTTPS_PROXY"], "socks5://127.0.0.1:7891")
+
+    def test_existing_child_env_is_kept(self):
+        os.makedirs(os.path.join(self.home, ".peer-review"))
+        with open(os.path.join(self.home, ".peer-review", "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"child_env": {"HTTPS_PROXY": "http://10.0.0.1:1"}}, f)
+        res = self.run_install("--no-install-deps", "--proxy", "http://127.0.0.1:7890")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self.config()["child_env"], {"HTTPS_PROXY": "http://10.0.0.1:1"})
+        self.assertIn("保持不变", res.stdout)
+
+    def test_failed_official_install_is_explained(self):
+        res = self.run_install(answers="\n", extra_env={"PEER_TEST_CLAUDE_INSTALL_CMD": "echo boom >&2; exit 7"})
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("❌ Claude Code 没装成功", res.stdout)
+        self.assertIn("开好代理后重新运行安装命令", res.stdout)
+        self.assertIn("✅ Codex 装好了", res.stdout)
+
+
+class TestBootstrap(unittest.TestCase):
+    """一行命令入口：下载指定版本的源码包、解压到 ~/.peer-review/src/ 并运行 install.sh；出错时给出大白话提示。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = os.path.realpath(tmp.name)
+        self.home = os.path.join(self.test_dir, "home")
+        os.makedirs(self.home)
+        # 模拟 GitHub 的源码包：顶层目录 peer-agent-9.9.9/
+        top = os.path.join(self.test_dir, "pkg", "peer-agent-9.9.9")
+        os.makedirs(top)
+        for name in ("install.sh", "config.example.json", "bootstrap.sh"):
+            shutil.copy2(os.path.join(REPO_DIR, name), os.path.join(top, name))
+        for name in ("bin", "templates", "skills"):
+            shutil.copytree(os.path.join(REPO_DIR, name), os.path.join(top, name))
+        self.archive = os.path.join(self.test_dir, "src.tar.gz")
+        subprocess.run(["tar", "-czf", self.archive, "-C", os.path.dirname(top), "peer-agent-9.9.9"], check=True)
+
+    def run_bootstrap(self, *args, archive=None):
+        env = {"HOME": self.home, "SHELL": "/bin/bash", "PATH": os.path.dirname(sys.executable) + ":/usr/bin:/bin",
+               "PEER_HOME": os.path.join(self.home, ".peer-review"),
+               "PEER_BOOTSTRAP_ARCHIVE_URL": "file://" + (archive or self.archive)}
+        return subprocess.run(["bash", os.path.join(REPO_DIR, "bootstrap.sh")] + list(args), env=env,
+                              capture_output=True, text=True, start_new_session=True, timeout=120)
+
+    def test_downloads_extracts_and_installs(self):
+        res = self.run_bootstrap("--version", "v9.9.9", "--no-install-deps")
+        self.assertIn(res.returncode, (0, 2), res.stdout + res.stderr)  # 2：没有官方 CLI，自检提示未就绪
+        src = os.path.join(self.home, ".peer-review", "src", "peer-agent-v9.9.9")
+        self.assertTrue(os.path.isfile(os.path.join(src, "install.sh")))
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".local", "bin", "peer")))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(src)) if n.startswith(".download")], [])
+        # 再运行一次直接复用已下载的源码
+        res = self.run_bootstrap("--version", "v9.9.9", "--no-install-deps")
+        self.assertIn("已经下载过 v9.9.9", res.stdout)
+
+    def test_errors_are_plain(self):
+        res = self.run_bootstrap("--version", "v1.2.3;rm", "--no-install-deps")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("版本号的写法不对", res.stderr)
+        res = self.run_bootstrap("--version", "v9.9.8", archive=os.path.join(self.test_dir, "missing.tar.gz"))
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("下载安装包失败", res.stderr)
+        self.assertIn("--proxy", res.stderr)
+        res = self.run_bootstrap("--version")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("--version 后面要跟版本号", res.stderr)
 
 if __name__ == "__main__":
     unittest.main()

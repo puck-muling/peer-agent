@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **One-line install (`bootstrap.sh`)**: `curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash` downloads the latest release into `~/.peer-review/src/` and runs its `install.sh`. `--version vX.Y.Z` picks a release; `--proxy URL` is also used for the download. Errors say what went wrong and what to do next.
+- **Installer checks the machine and fills in what is missing (`install.sh`)**: it first checks (without changing anything) Python, Claude Code, Codex, whether each is signed in, and whether Claude / OpenAI are reachable, lists what it will do, and after a single Enter installs the missing CLIs with their official installers (`https://claude.ai/install.sh`, `https://chatgpt.com/codex/install.sh`), opens the sign-in flow (`claude auth login`, `codex login`), and asks for a proxy when the network is blocked. Anything already installed and signed in is left alone. Without a terminal (CI, unattended) nothing is installed unless `--install-deps` is passed; `--no-install-deps` only checks. On macOS without Python it triggers the system "command line developer tools" installer or uses Homebrew; on Linux it offers the distro package manager.
+- **`--proxy URL`**: used during installation and saved to `child_env` in `config.json` (an existing `child_env` is left unchanged). A proxy that is already exported in the environment is saved the same way.
+
+### Changed
+- Installer messages are rewritten in plain language: what happened and what to do next. Codex install hints use the official installer instead of npm; Homebrew hints only appear on macOS.
+- README: one-line install section, proxy setup via `child_env`, the verified scope (real calls on the author's Apple Silicon Mac; CI runs unit tests and clean installs on macOS and Linux without real model calls). Removed usage statistics that cannot be verified externally.
+
 ## [0.1.2] - 2026-11-02
 
 ### Security

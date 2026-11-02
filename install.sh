@@ -10,6 +10,9 @@ LOCAL_BIN="$HOME/.local/bin"
 # Codex 技能目录：旧版扫描 ~/.codex/skills，OpenAI 现行文档为 ~/.agents/skills，两处都装
 CODEX_SKILL_DIRS=("$HOME/.codex/skills" "$HOME/.agents/skills")
 MODE="copy"
+# 缺少的环境怎么处理：ask = 列出要做的事，按回车就自动完成；yes = 不问直接做；no = 只检查不安装
+INSTALL_DEPS="ask"
+PROXY_ARG=""
 # 写入本工具安装的每个文件，卸载时据此精确识别归属，避免误删用户同名文件
 PEER_MARKER="managed-by: peer-agent"
 
@@ -32,6 +35,9 @@ usage() {
   echo "  --link       使用软链接安装（适合开发者，修改代码立即生效）"
   echo "  --copy       使用文件复制安装（默认方式）"
   echo "  --uninstall  卸载 PeerAgent 及相关技能配置（若有安装前备份将自动还原）"
+  echo "  --install-deps     缺少的环境（Python、Claude Code、Codex）不再询问，直接自动安装"
+  echo "  --no-install-deps  只检查环境，缺什么只提示、不安装"
+  echo "  --proxy 地址       设置代理（如 http://127.0.0.1:7890），安装时使用并保存给 peer"
   echo "  -h, --help   显示本帮助信息"
   exit "$code"
 }
@@ -42,17 +48,29 @@ while [[ $# -gt 0 ]]; do
     --link) MODE="link"; shift ;;
     --copy) MODE="copy"; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
+    --install-deps) INSTALL_DEPS="yes"; shift ;;
+    --no-install-deps) INSTALL_DEPS="no"; shift ;;
+    --proxy)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then echo "--proxy 后面要跟代理地址，例如 --proxy http://127.0.0.1:7890" >&2; usage 2; fi
+      PROXY_ARG="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "未知参数: $1" >&2; usage 2 ;;
   esac
 done
 
+print_codex_install_hint() {
+  local indent="${1:-   }"
+  echo "${indent}- 安装 Codex（官方命令）: curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+  [ "$(uname -s)" = "Darwin" ] && echo "${indent}  macOS 也可以用: brew install --cask codex"
+  echo "${indent}  装好后登录: codex login"
+}
+
 print_claude_install_hint() {
   # 官方首推原生安装，brew / npm 作为备选；只提示，不代装
   local indent="${1:-   }"
-  echo "${indent}- 安装 Claude（官方推荐）: curl -fsSL https://claude.ai/install.sh | bash"
-  echo "${indent}  macOS 备选: brew install --cask claude-code；npm 备选（需已安装 Node.js）: npm install -g @anthropic-ai/claude-code"
-  echo "${indent}  安装后登录: claude auth login"
+  echo "${indent}- 安装 Claude Code（官方命令）: curl -fsSL https://claude.ai/install.sh | bash"
+  [ "$(uname -s)" = "Darwin" ] && echo "${indent}  macOS 也可以用: brew install --cask claude-code"
+  echo "${indent}  装好后登录: claude auth login"
 }
 
 canon_path() {
@@ -357,6 +375,362 @@ install_template() {
   fi
 }
 
+# ---------------------------------------------------------------- 环境检测与自动安装
+# 原则：先全面检查（只看不改），列出要做的事，用户按一次回车就逐项完成；已装好的不重复安装。
+# 只使用写死在这里的官方安装地址，执行前把完整命令显示出来。
+CLAUDE_INSTALL_CMD='curl -fsSL https://claude.ai/install.sh | bash'
+# NON_INTERACTIVE=1：不让 Codex 安装脚本自己再问“现在启动吗”，登录由本脚本引导
+CODEX_INSTALL_CMD='curl -fsSL https://chatgpt.com/codex/install.sh | NON_INTERACTIVE=1 sh'
+if [ "${PEER_TEST_MODE:-}" = "1" ]; then
+  # 仅供测试：用假的安装命令代替官方脚本，避免真的联网安装
+  CLAUDE_INSTALL_CMD="${PEER_TEST_CLAUDE_INSTALL_CMD:-$CLAUDE_INSTALL_CMD}"
+  CODEX_INSTALL_CMD="${PEER_TEST_CODEX_INSTALL_CMD:-$CODEX_INSTALL_CMD}"
+fi
+
+# 问答输入：通过 curl ... | bash 运行时，标准输入是脚本本身，所以改从终端（/dev/tty）读；
+# 没有终端（CI、无人值守）时不提问。PEER_INSTALL_INPUT 仅供测试，从文件读取回答。
+PROMPT_FD=""
+INTERACTIVE_STDIN="/dev/null"
+if [ -n "${PEER_INSTALL_INPUT:-}" ]; then
+  exec 3<"$PEER_INSTALL_INPUT" && PROMPT_FD=3
+elif ( : </dev/tty ) 2>/dev/null; then
+  exec 3</dev/tty && PROMPT_FD=3 && INTERACTIVE_STDIN="/dev/tty"
+fi
+
+REPLY_LINE=""
+ask_line() {
+  # $1 提示语；回答放在 REPLY_LINE。读不到（无终端或输入结束）时视为空回答以外的“跳过”
+  REPLY_LINE=""
+  printf '%s' "$1"
+  if [ -z "$PROMPT_FD" ] || ! IFS= read -r REPLY_LINE <&3; then
+    REPLY_LINE="n"
+    echo ""
+  fi
+}
+
+ensure_local_bin_on_path() {
+  # 官方安装脚本都装到 ~/.local/bin；本次运行内立即可用，不用重开终端
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+  esac
+}
+
+python_state() {
+  # ok / old / missing。macOS 的 /usr/bin/python3 在没装“命令行开发者工具”时只是个占位程序，
+  # 一运行就弹窗，所以先用 xcode-select 判断，不去触发它
+  local py
+  py="$(command -v python3 2>/dev/null || true)"
+  if [ -z "$py" ]; then echo missing; return; fi
+  if [ "$py" = "/usr/bin/python3" ] && [ "$(uname -s)" = "Darwin" ] && ! xcode-select -p >/dev/null 2>&1; then
+    echo missing; return
+  fi
+  if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    echo ok
+  else
+    echo old
+  fi
+}
+
+claude_state() {
+  # ok / nologin / missing
+  command -v claude >/dev/null 2>&1 || { echo missing; return; }
+  if claude auth status 2>/dev/null | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'; then echo ok; else echo nologin; fi
+}
+
+codex_state() {
+  command -v codex >/dev/null 2>&1 || { echo missing; return; }
+  if codex login status 2>&1 | grep -Eiq '^[[:space:]]*Logged in using'; then echo ok; else echo nologin; fi
+}
+
+network_ok() {
+  # 能连上 Claude 和 OpenAI 的网站就算通（返回 403 之类也说明网络是通的）
+  if [ "${PEER_TEST_MODE:-}" = "1" ] && [ -n "${PEER_TEST_NET:-}" ]; then
+    [ "$PEER_TEST_NET" = "ok" ] || [ -n "${HTTPS_PROXY:-}" ]
+    return
+  fi
+  curl -sS -m 8 -o /dev/null https://claude.ai >/dev/null 2>&1 &&
+    curl -sS -m 8 -o /dev/null https://chatgpt.com >/dev/null 2>&1
+}
+
+valid_proxy() {
+  case "$1" in
+    http://?*|https://?*|socks5://?*|socks5h://?*)
+      case "$1" in *[[:space:]]*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+PROXY_TO_SAVE=""
+use_proxy() {
+  export HTTPS_PROXY="$1" HTTP_PROXY="$1" https_proxy="$1" http_proxy="$1"
+  case "$1" in socks*) export ALL_PROXY="$1" all_proxy="$1" ;; esac
+  PROXY_TO_SAVE="$1"
+}
+
+run_official_install() {
+  # $1 名称，$2 命令。官方脚本不需要回答问题，标准输入接 /dev/null，避免吞掉本脚本的问答
+  echo "   正在安装 $1，需要一两分钟，请稍候……"
+  echo "   （运行的是官方安装命令：$2）"
+  if bash -c "set -o pipefail; $2" </dev/null; then
+    ensure_local_bin_on_path
+    hash -r 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+install_python() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      echo "   正在用 Homebrew 安装 Python（运行：brew install python）……"
+      brew install python </dev/null && hash -r && return 0
+      return 1
+    fi
+    echo "   马上会弹出一个“安装命令行开发者工具”的窗口，请点【安装】，等它装完（几分钟）。"
+    xcode-select --install >/dev/null 2>&1 || true
+    echo ""
+    echo "👉 装好后，请重新运行一次刚才的安装命令，剩下的会自动完成。"
+    exit 1
+  fi
+  local cmd=""
+  if command -v apt-get >/dev/null 2>&1; then cmd="sudo apt-get install -y python3"
+  elif command -v dnf >/dev/null 2>&1; then cmd="sudo dnf install -y python3"
+  elif command -v pacman >/dev/null 2>&1; then cmd="sudo pacman -S --noconfirm python"
+  fi
+  if [ -z "$cmd" ]; then
+    echo "   没找到能自动安装 Python 的方式。请用系统自带的软件管理工具安装 Python 3.9 或更新版本，然后重新运行安装命令。"
+    return 1
+  fi
+  echo "   正在安装 Python（运行：$cmd），可能会要求输入你的电脑登录密码……"
+  bash -c "$cmd" <"$INTERACTIVE_STDIN" && hash -r
+}
+
+login_cli() {
+  # $1 claude|codex
+  if [ "$INTERACTIVE_STDIN" != "/dev/tty" ] && [ -z "${PEER_INSTALL_INPUT:-}" ]; then
+    echo "   ⚠️ 现在不是在终端里运行，没法打开登录页面。装好后请自己运行：$( [ "$1" = claude ] && echo 'claude auth login' || echo 'codex login' )"
+    return 1
+  fi
+  if [ "$1" = "claude" ]; then
+    echo "   接下来登录 Claude：会打开浏览器，用你的 Claude 账号（Pro / Max 等付费版）登录并授权，完成后回到这里。"
+    claude auth login <"$INTERACTIVE_STDIN"
+  else
+    echo "   接下来登录 Codex：会打开浏览器，选“用 ChatGPT 登录”（Plus / Pro 等付费版），完成后回到这里。"
+    codex login <"$INTERACTIVE_STDIN"
+  fi
+}
+
+state_text() {
+  # $1 名称 $2 状态
+  case "$2" in
+    ok) echo "   ✅ $1：已安装，已登录" ;;
+    nologin) echo "   ⚠️  $1：已安装，还没登录" ;;
+    missing) echo "   ❌ $1：没有安装" ;;
+  esac
+}
+
+print_manual_steps() {
+  echo ""
+  echo "   需要你手动完成的事："
+  if [ "$PY_STATE" != "ok" ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+      echo "   - 安装 Python 3.9 或更新版本：运行 xcode-select --install（会弹窗，点【安装】），或者 brew install python"
+    else
+      echo "   - 安装 Python 3.9 或更新版本：Ubuntu / Debian 运行 sudo apt-get install python3，Fedora 运行 sudo dnf install python3，Arch 运行 sudo pacman -S python"
+    fi
+  fi
+  [ "$CLAUDE_STATE" = "missing" ] && print_claude_install_hint "   "
+  [ "$CLAUDE_STATE" = "nologin" ] && echo "   - 登录 Claude: claude auth login"
+  [ "$CODEX_STATE" = "missing" ] && print_codex_install_hint "   "
+  [ "$CODEX_STATE" = "nologin" ] && echo "   - 登录 Codex: codex login"
+  [ "$NET_STATE" = "fail" ] && echo "   - 连不上 Claude / OpenAI：国内网络一般要开代理，可以重新运行并加上 --proxy http://127.0.0.1:你的代理端口"
+  return 0
+}
+
+setup_environment() {
+  echo "==> 1. 检查电脑环境（只检查，不做改动）..."
+  case "$(uname -s)" in
+    Darwin|Linux) ;;
+    *)
+      echo "❌ 这台电脑的系统暂不支持。PeerAgent 支持 macOS 和 Linux；Windows 请先装 WSL2，在 WSL2 里运行安装命令。" >&2
+      exit 1 ;;
+  esac
+  ensure_local_bin_on_path
+  if [ -n "$PROXY_ARG" ]; then
+    if ! valid_proxy "$PROXY_ARG"; then
+      echo "❌ 代理地址的写法不对：$PROXY_ARG。应该像 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891 这样。" >&2
+      exit 2
+    fi
+    use_proxy "$PROXY_ARG"
+  fi
+
+  PY_STATE="$(python_state)"
+  CLAUDE_STATE="$(claude_state)"
+  CODEX_STATE="$(codex_state)"
+  NET_STATE="skip"
+  local acting=0
+  if [ "$INSTALL_DEPS" = "yes" ] || { [ "$INSTALL_DEPS" = "ask" ] && [ -n "$PROMPT_FD" ]; }; then
+    acting=1
+    if network_ok; then NET_STATE="ok"; else NET_STATE="fail"; fi
+  fi
+
+  echo "   检查结果："
+  case "$PY_STATE" in
+    ok) echo "   ✅ Python：$(python3 -c 'import platform; print(platform.python_version())')" ;;
+    old) echo "   ❌ Python：版本太旧（$(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null)），需要 3.9 或更新" ;;
+    missing) echo "   ❌ Python：没有安装" ;;
+  esac
+  state_text "Claude Code（在 Codex 里用 /claude 需要它）" "$CLAUDE_STATE"
+  state_text "Codex（在 Claude 里用 /codex 需要它）" "$CODEX_STATE"
+  case "$NET_STATE" in
+    ok) echo "   ✅ 网络：能连上 Claude 和 OpenAI" ;;
+    fail) echo "   ❌ 网络：连不上 Claude / OpenAI（国内网络一般需要代理）" ;;
+  esac
+  # 代理是靠环境变量连上的：保存给 peer，从桌面 App 里调用时也能用上
+  if [ "$NET_STATE" = "ok" ] && [ -z "$PROXY_TO_SAVE" ]; then
+    local envp="${HTTPS_PROXY:-${https_proxy:-${ALL_PROXY:-${all_proxy:-}}}}"
+    if [ -n "$envp" ] && valid_proxy "$envp"; then PROXY_TO_SAVE="$envp"; fi
+  fi
+
+  local todo=()
+  [ "$NET_STATE" = "fail" ] && todo+=("设置代理（你输入代理地址，没有就跳过）")
+  [ "$PY_STATE" = "ok" ] || todo+=("安装 Python")
+  [ "$CLAUDE_STATE" = "missing" ] && todo+=("安装 Claude Code（官方命令：curl -fsSL https://claude.ai/install.sh | bash）")
+  [ "$CODEX_STATE" = "missing" ] && todo+=("安装 Codex（官方命令：curl -fsSL https://chatgpt.com/codex/install.sh | sh）")
+  [ "$CLAUDE_STATE" = "ok" ] || todo+=("登录 Claude（会打开浏览器）")
+  [ "$CODEX_STATE" = "ok" ] || todo+=("登录 Codex（会打开浏览器）")
+
+  if [ ${#todo[@]} -eq 0 ]; then
+    echo "   一切就绪，不需要额外安装。"
+  elif [ "$acting" = "0" ]; then
+    if [ "$INSTALL_DEPS" = "no" ]; then
+      echo "   （你选择了只检查不安装）"
+    else
+      echo "   （现在不是在终端里交互运行，不会自动安装；想全自动安装可以加上 --install-deps）"
+    fi
+    print_manual_steps
+  else
+    echo ""
+    echo "   接下来会自动帮你完成："
+    local i=1 t
+    for t in "${todo[@]}"; do echo "   $i. $t"; i=$((i + 1)); done
+    local go=1
+    if [ "$INSTALL_DEPS" = "ask" ]; then
+      ask_line "   按【回车】开始，输入 n 再回车可跳过这些步骤："
+      case "$REPLY_LINE" in ""|y|Y|yes|YES|是|好) go=1 ;; *) go=0 ;; esac
+    fi
+    if [ "$go" = "0" ]; then
+      echo "   好的，跳过自动安装。"
+      print_manual_steps
+    else
+      do_environment_steps
+    fi
+  fi
+
+  if [ "$PY_STATE" != "ok" ]; then
+    echo "" >&2
+    echo "❌ 还没有可用的 Python（需要 3.9 或更新版本），PeerAgent 暂时装不上。按上面的提示装好 Python 后，重新运行安装命令即可。" >&2
+    exit 1
+  fi
+  HAS_CLAUDE=0; HAS_CODEX=0
+  [ "$CLAUDE_STATE" = "missing" ] || HAS_CLAUDE=1
+  [ "$CODEX_STATE" = "missing" ] || HAS_CODEX=1
+}
+
+do_environment_steps() {
+  if [ "$NET_STATE" = "fail" ]; then
+    echo ""
+    echo "   【设置代理】如果你在用代理软件（如 Clash、V2Ray），请输入它的地址，"
+    echo "   例如 http://127.0.0.1:7890（端口号在代理软件的设置里能看到）。没有代理就直接按回车跳过。"
+    if [ "$INSTALL_DEPS" = "ask" ]; then
+      while :; do
+        ask_line "   代理地址："
+        [ -z "$REPLY_LINE" ] || [ "$REPLY_LINE" = "n" ] && break
+        if valid_proxy "$REPLY_LINE"; then
+          use_proxy "$REPLY_LINE"
+          if network_ok; then NET_STATE="ok"; echo "   ✅ 用这个代理能连上了。"; break; fi
+          echo "   ⚠️ 用这个代理还是连不上，请检查代理软件是否已打开、端口是否正确，然后再输入一次（直接回车跳过）。"
+        else
+          echo "   ⚠️ 写法不对，应该像 http://127.0.0.1:7890 这样，请再输入一次（直接回车跳过）。"
+        fi
+      done
+    fi
+    [ "$NET_STATE" = "ok" ] || echo "   ⚠️ 网络还是不通，下面的安装和登录可能会失败；失败了也没关系，开好代理后重新运行安装命令即可。"
+  fi
+
+  if [ "$PY_STATE" != "ok" ]; then
+    echo ""
+    echo "   【安装 Python】"
+    if install_python; then PY_STATE="$(python_state)"; fi
+    [ "$PY_STATE" = "ok" ] && echo "   ✅ Python 装好了。" || echo "   ❌ Python 没装成功。"
+  fi
+
+  if [ "$CLAUDE_STATE" = "missing" ]; then
+    echo ""
+    echo "   【安装 Claude Code】"
+    if run_official_install "Claude Code" "$CLAUDE_INSTALL_CMD"; then CLAUDE_STATE="$(claude_state)"; fi
+    if [ "$CLAUDE_STATE" = "missing" ]; then
+      echo "   ❌ Claude Code 没装成功。多半是网络问题：开好代理后重新运行安装命令；也可以参考官方说明 https://code.claude.com/docs/en/setup"
+    else
+      echo "   ✅ Claude Code 装好了。"
+    fi
+  fi
+
+  if [ "$CODEX_STATE" = "missing" ]; then
+    echo ""
+    echo "   【安装 Codex】"
+    if run_official_install "Codex" "$CODEX_INSTALL_CMD"; then CODEX_STATE="$(codex_state)"; fi
+    if [ "$CODEX_STATE" = "missing" ]; then
+      echo "   ❌ Codex 没装成功。多半是网络问题：开好代理后重新运行安装命令；也可以参考官方说明 https://github.com/openai/codex"
+    else
+      echo "   ✅ Codex 装好了。"
+    fi
+  fi
+
+  if [ "$CLAUDE_STATE" = "nologin" ]; then
+    echo ""
+    echo "   【登录 Claude】"
+    login_cli claude || true
+    CLAUDE_STATE="$(claude_state)"
+    [ "$CLAUDE_STATE" = "ok" ] && echo "   ✅ Claude 已登录。" || echo "   ⚠️ Claude 还没登录成功，稍后可以自己运行：claude auth login"
+  fi
+
+  if [ "$CODEX_STATE" = "nologin" ]; then
+    echo ""
+    echo "   【登录 Codex】"
+    login_cli codex || true
+    CODEX_STATE="$(codex_state)"
+    [ "$CODEX_STATE" = "ok" ] && echo "   ✅ Codex 已登录。" || echo "   ⚠️ Codex 还没登录成功，稍后可以自己运行：codex login"
+  fi
+  return 0
+}
+
+save_proxy_config() {
+  # 把代理写进 config.json 的 child_env，让 peer 调用 Claude / Codex 时也走代理；已有 child_env 时不动
+  [ -n "$PROXY_TO_SAVE" ] || return 0
+  python3 - "$PEER_HOME/config.json" "$PROXY_TO_SAVE" <<'PY' || echo "   ⚠️ 代理没能写进配置文件，可以稍后手动在 ~/.peer-review/config.json 的 child_env 里填写。"
+import json, os, sys
+path, url = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    cfg = json.load(f)
+env = cfg.get("child_env")
+if isinstance(env, dict) and env:
+    print("   代理：配置文件里已经设置过 child_env，保持不变。")
+    sys.exit(0)
+keys = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]
+if url.startswith("socks"):
+    keys += ["ALL_PROXY", "all_proxy"]
+cfg["child_env"] = {k: url for k in keys}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+os.replace(tmp, path)
+print("   ✅ 已把代理 %s 保存给 peer（config.json 的 child_env），以后调用 Claude / Codex 都会走这个代理。" % url)
+PY
+}
+
 preflight_paths
 
 if [ "$MODE" = "uninstall" ]; then
@@ -365,55 +739,9 @@ fi
 
 print_banner
 
-echo "==> 1. 检查基础依赖环境..."
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "❌ 错误: 未检测到 python3，PeerAgent 核心调度器依赖 Python 3.9+。" >&2
-  exit 1
-fi
+setup_environment
 
-PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
-PY_CHECK=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 9) else 0)")
-if [ "$PY_CHECK" != "1" ]; then
-  echo "❌ 错误: PeerAgent 要求 Python 3.9 及以上版本（当前检测到: ${PY_VER}）。" >&2
-  if [ "$(uname -s)" = "Linux" ]; then
-    echo "👉 Linux 升级建议：通过系统包管理器 apt / dnf / pacman 安装 Python 3.9+。" >&2
-    echo "   若系统仓库版本过旧，可用 pyenv 或 uv 安装 Python 3.9+，并确保 python3 指向新版本。" >&2
-  else
-    echo "👉 macOS 升级建议（二选一）：" >&2
-    echo "   1. 运行 Homebrew 安装: brew install python" >&2
-    echo "   2. 访问官网下载安装包: https://www.python.org/downloads/macos/" >&2
-  fi
-  exit 1
-fi
-echo "   Python 版本: ${PY_VER} (符合 >= 3.9 要求)"
-
-HAS_CLAUDE=0
-HAS_CODEX=0
-
-if command -v claude >/dev/null 2>&1; then
-  HAS_CLAUDE=1
-  echo "   Claude: 已安装 ($(claude --version 2>/dev/null || echo 'OK'))"
-else
-  echo "   ⚠️ 提示: 未检测到 'claude' CLI。若需调用 Claude，请先安装官方 Claude："
-  print_claude_install_hint "     "
-fi
-
-if command -v codex >/dev/null 2>&1; then
-  HAS_CODEX=1
-  echo "   Codex: 已安装 ($(codex --version 2>/dev/null || echo 'OK'))"
-else
-  echo "   ⚠️ 提示: 未检测到 'codex' CLI。若需调用 Codex，请先安装官方 Codex: npm install -g @openai/codex"
-fi
-
-if [ "$HAS_CLAUDE" = "0" ] && [ "$HAS_CODEX" = "0" ]; then
-  echo ""
-  echo "💡 提示: 未检测到任何已安装的官方 CLI（Claude 或 Codex）。"
-  echo "   PeerAgent 需驱动本机官方 CLI 进行对等审阅，建议至少安装并登录一个："
-  echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
-  print_claude_install_hint "   "
-fi
-
-echo "==> 2. 初始化目标目录与核心组件..."
+echo "==> 2. 安装 PeerAgent 本身..."
 preflight_install_dirs
 mkdir -p "$PEER_HOME/bin" "$PEER_HOME/templates" "$PEER_HOME/logs" "$LOCAL_BIN"
 
@@ -433,8 +761,9 @@ if [ ! -f "$PEER_HOME/config.json" ]; then
   cp "$SCRIPT_DIR/config.example.json" "$PEER_HOME/config.json"
   echo "   已生成默认配置文件: $PEER_HOME/config.json"
 fi
+save_proxy_config
 
-echo "==> 3. 安装三端 Agent 技能..."
+echo "==> 3. 把 /codex、/claude 技能装进各个 AI 工具..."
 
 # A. Antigravity Skills
 safe_install_skill "$SCRIPT_DIR/skills/antigravity/codex/SKILL.md" "$HOME/.gemini/config/skills/codex/SKILL.md"
@@ -492,57 +821,46 @@ configure_path_if_needed() {
 }
 
 print_usage_hint() {
-  # 只列出当前已安装 CLI 能实际跑通的命令，缺失一侧给出安装指引
+  # 只列出现在真能用的用法；缺的一侧告诉用户重新运行安装命令就会自动补上
   echo ""
-  if [ "$HAS_CLAUDE" = "1" ] && [ "$HAS_CODEX" = "1" ]; then
-    echo "使用方式："
-    echo "  1. 在 Antigravity 对话框中直接输入: /codex 审一下当前代码"
-    echo "  2. 在 Claude 终端中输入:       /codex 检查这个函数的逻辑边界"
-    echo "  3. 在 Codex 中输入:             /claude 审阅当前改动"
-  elif [ "$HAS_CLAUDE" = "1" ]; then
-    echo "当前仅检测到 Claude CLI，已具备调用 Claude 的技能："
-    echo "  - 在 Antigravity 对话框中输入: /claude 审一下当前代码"
-    echo "  - 或在终端直接调用: peer ask claude review --request ./review-task.md --cwd ."
+  if [ "$HAS_CLAUDE" = "1" ] || [ "$HAS_CODEX" = "1" ]; then
+    echo "怎么用：在你平时用的 AI 编程工具里直接输入"
+    [ "$HAS_CODEX" = "1" ] && echo "  - 在 Claude Code 里：/codex 帮我审一下刚才的改动"
+    [ "$HAS_CLAUDE" = "1" ] && echo "  - 在 Codex 里：/claude 帮我审一下刚才的改动"
+    echo "  - 在 Antigravity 里：/codex 或 /claude，后面写上你的要求"
+    echo "  提问和审阅不会改动你的文件；要让它动手修改，请以 exec 开头，例如：/codex exec 修复登录超时的问题"
+  fi
+  if [ "$HAS_CLAUDE" = "0" ] || [ "$HAS_CODEX" = "0" ]; then
     echo ""
-    echo "⚠️ 若要在 Claude 终端中使用 /codex 对等互审，需先安装并登录 Codex："
-    echo "   npm install -g @openai/codex && codex login"
-    echo "   安装后运行 peer doctor 确认双端就绪即可，无需重新安装 PeerAgent。"
-  elif [ "$HAS_CODEX" = "1" ]; then
-    echo "当前仅检测到 Codex CLI，已具备调用 Codex 的技能："
-    echo "  - 在 Antigravity 对话框中输入: /codex 审一下当前代码"
-    echo "  - 或在终端直接调用: peer ask codex review --request ./review-task.md --cwd ."
-    echo ""
-    echo "⚠️ 若要在 Codex 中使用 /claude 对等互审，需先安装并登录 Claude："
-    print_claude_install_hint "   "
-    echo "   安装后运行 peer doctor 确认双端就绪即可，无需重新安装 PeerAgent。"
-  else
-    echo "⚠️ 未检测到任何官方 CLI，/codex 与 /claude 暂不可用。请至少安装并登录一个："
-    echo "   - 安装 Codex:  npm install -g @openai/codex && codex login"
-    print_claude_install_hint "   "
-    echo "   安装后运行 peer doctor 复查。"
+    [ "$HAS_CODEX" = "0" ] && echo "  还不能在 Claude Code 里用 /codex：这台电脑没装 Codex。"
+    [ "$HAS_CLAUDE" = "0" ] && echo "  还不能在 Codex 里用 /claude：这台电脑没装 Claude Code。"
+    echo "  想补上的话，重新运行一次安装命令，缺的会自动装好。"
   fi
   echo ""
 }
 
-echo "==> 4. 运行自检验证..."
+echo "==> 4. 最后检查一遍..."
 # 显式保存 doctor 的真实退出码，不能让后续提示命令覆盖为 0
 DOCTOR_RC=0
 "$LOCAL_BIN/peer" doctor || DOCTOR_RC=$?
 if [ "$DOCTOR_RC" = "0" ]; then
   echo ""
   if [ "$HAS_CLAUDE" = "1" ] && [ "$HAS_CODEX" = "1" ]; then
-    echo "🎉 恭喜！PeerAgent 安装完成并自检通过！"
+    echo "🎉 安装完成，全部检查通过！"
   else
-    echo "✅ PeerAgent 已安装，自检通过（仅单侧 CLI 可用，对等互审需补装另一侧）。"
+    echo "✅ 安装完成，检查通过（目前只装了一边，所以只能单向使用）。"
   fi
   print_usage_hint
   configure_path_if_needed
 else
   echo ""
   if [ "$DOCTOR_RC" = "3" ]; then
-    echo "⛔ 自检发现熔断停机锁仍在生效（peer doctor 退出码 3）。请先人工核实上方列出的锁文件原因，确认安全后再手动处理。"
+    echo "⛔ 之前检测到账号可能出了严重问题（比如被停用），peer 已暂停调用来保护账号。"
+    echo "   请先确认账号正常，再按上面列出的路径，由你本人手动删除那个 STOP 文件。"
   else
-    echo "⚠️ 自检未通过（peer doctor 退出码 ${DOCTOR_RC}），请根据上述提示核查后运行 peer doctor 复查。"
+    echo "⚠️ PeerAgent 已经装好，但还有几项没就绪：请看上面带 ⚠️ 或“找不到”的行。"
+    echo "   最常见的是还没登录：运行 claude auth login 或 codex login；也可以直接重新运行一次安装命令，缺的会自动补上。"
+    echo "   处理完后运行 peer doctor 再检查一次。"
   fi
   print_usage_hint
   configure_path_if_needed

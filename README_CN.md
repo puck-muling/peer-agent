@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 > [!NOTE]
 > **同名项目说明**：本项目（`puck-muling/peer-agent`）是面向代码工程实战的**多智能体安全治理与对等审查中间件**（基于本地官方 CLI、零第三方 pip 依赖、内置计费门禁与封号熔断）；不同于 `hirak99/peer-agent`（基于 HTTP/FastAPI 的伴生 Agent 框架），二者架构与应用场景完全不同。
 
-适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.9+ 和被调用模型对应的官方 CLI**；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 用户请在 WSL2 中安装和使用（原生 Windows 仅做了文件锁与进程终止的降级兼容，`install.sh` 不支持原生 Windows）。
+适合已经使用 Claude Code 或 Codex、想让另一个模型多检查一遍的开发者。需要 **Python 3.9+ 和被调用模型对应的官方 CLI**（缺的话一键安装会自动帮你装）；订阅登录仍会消耗对应额度，实际计费取决于登录方式和所用工具。安装面向 macOS / Linux；Windows 用户请在 WSL2 中安装和使用（原生 Windows 仅做了文件锁与进程终止的降级兼容，`install.sh` 不支持原生 Windows）。
 
 ## 生态定位与同类对比：不仅是调用通道，更是安全治理层
 
@@ -65,11 +65,46 @@ PeerAgent 的核心护城河是**将调用能力深嵌在一套坚固的防御�
 | 在 Antigravity 中调用任一模型 | Antigravity 主持环境，以及被调用模型对应的官方 CLI 和登录状态 |
 | 直接用 `peer ask` 调用 | Python 3.9+，以及被调用模型对应的官方 CLI 和登录状态 |
 
-PeerAgent 不替你安装或登录这些 CLI。按需准备后，先确认目标 CLI 能单独运行，再安装 PeerAgent；无需为了单向调用而开通另一条不用的调用渠道。
+上面这些不用自己一项项准备：下面的一键安装会自动检查，缺什么装什么。
 
-### 30 秒上手命令
+### 一键安装（推荐，macOS / Linux）
 
-以下是已具备前置环境时的安装入口，下载和首次调用耗时取决于网络与任务大小：
+打开“终端”，复制下面这一行，粘贴后按回车：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash
+```
+
+它会：
+
+1. 下载最新发布版本，装好 `peer` 命令和各端技能；
+2. 检查这台电脑缺什么：Python、Claude Code、Codex、有没有登录、能不能连上 Claude / OpenAI；
+3. 把要做的事列出来，**你只需要按一次回车**，它就会自动用官方命令安装缺的工具、打开浏览器让你登录、网络不通时问你代理地址；
+4. 最后再检查一遍，告诉你现在能怎么用。
+
+已经装好、登录好的不会重复处理；任何一步失败，都会直接告诉你原因和下一步怎么做。
+
+- **国内网络**：连 GitHub、Claude、OpenAI 一般都需要代理。先打开代理软件，再用下面这一行（把 7890 换成你代理软件里显示的端口）。代理也会保存给 peer（写进配置的 `child_env`），之后调用 Claude / Codex 同样会用它。
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
+  ```
+
+- **想先看看脚本再运行**：
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh -o peer-bootstrap.sh
+  less peer-bootstrap.sh
+  bash peer-bootstrap.sh
+  ```
+
+- **Mac 第一次用 Python**：如果系统弹窗要求安装“命令行开发者工具”，点【安装】，装完再运行一次上面的命令即可。
+- **Windows**：目前请先安装 WSL2，在 WSL2 的终端里运行上面的命令。
+- 安装脚本只运行官方安装命令，执行前会显示出来：Claude Code 用 `curl -fsSL https://claude.ai/install.sh | bash`，Codex 用 `curl -fsSL https://chatgpt.com/codex/install.sh | sh`。不想自动安装可以加 `--no-install-deps`，只检查不安装。
+
+### 从源码安装（开发者）
+
+在源码目录运行 `./install.sh`，效果和一键安装相同，也会检查并补齐缺的环境：
 
 ```bash
 git clone https://github.com/puck-muling/peer-agent.git
@@ -266,6 +301,18 @@ peer since-freeze ./方案-v2_冻结v001.md
 
 ### 国内网络下，代理端口能连但请求仍失败
 
+**最简单的办法**：重新运行安装命令并加上 `--proxy http://127.0.0.1:你的端口`，或者直接在 `~/.peer-review/config.json` 里写：
+
+```json
+{
+  "child_env": {"HTTPS_PROXY": "http://127.0.0.1:7890", "HTTP_PROXY": "http://127.0.0.1:7890"}
+}
+```
+
+peer 是直接运行 Claude / Codex 程序的，不经过你在 shell 里给 `claude`、`codex` 设置的函数或别名，所以写在那里的代理 peer 用不上；从桌面 App 里调用时，也拿不到终端里的代理环境变量。`child_env` 就是为这种情况准备的，`peer doctor` 会列出已生效的变量名。
+
+下面的 `proxy_check` 只是检查端口用的：
+
 `proxy_check` **只用 TCP 连接探测指定的主机和端口**，不自动设置代理，也不检查 HTTP/SOCKS 协议、认证、DNS、TLS 或官方模型服务是否可达。可以按本机实际端口配置：
 
 ```json
@@ -396,11 +443,7 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 写完代码后，我们经常想请另一个模型再看一遍，但复制代码、切窗口、搬回意见很麻烦。PeerAgent 把这一步接到现有会话里，使用本机已登录的 CLI，减少重复操作。
 
-更重要的是，**它源于真实的高强度多 Agent 编程实战，经过了大规模工程考验**：
-- 累计承载 **372+ 次代码与方案交叉审阅**、**235+ 次架构咨询与边界探讨**、**283+ 次跨模型出图辅助**；
-- 在高频调用中保持**零意外扣费**、**零连带封号**；
-- `approved_auth` 曾成功拦截过 4 次因终端环境变量残留 API Key 险些导致的按量计费调用；
-- `STOP` 熔断锁在网络代理波动与风控提示时及时阻断了并发重试链条，保护了宝贵的官方订阅账号。
+它来自作者日常的多 Agent 编程实践。真实调用（审阅、修改执行、沙箱拦截）在作者的 Mac（Apple Silicon）上实测过；CI 在 macOS 和 Linux 上运行单元测试和从零安装测试，但 CI 里没有账号，不做真实的模型调用。在其他机型或系统上遇到问题，欢迎提 issue。
 
 如果只是想在现有 CLI 之间安全、省心地让另一个模型多做一次代码检查，PeerAgent 就是为你打造的。
 
