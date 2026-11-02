@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# 安装过程中会临时把 ~/.local/bin 加进 PATH（刚装的工具立即可用）；判断要不要写 shell 配置时必须看原始 PATH
+ORIGINAL_PATH="$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PEER_HOME="${PEER_HOME:-$HOME/.peer-review}"
 LOCAL_BIN="$HOME/.local/bin"
@@ -791,7 +794,7 @@ configure_path_if_needed() {
     echo "提示: 非登录、非交互 shell 未必读取 ~/.profile；此时可使用 $LOCAL_BIN/peer。"
   fi
 
-  if [[ ":$PATH:" == *":$LOCAL_BIN:"* ]]; then
+  if [[ ":${ORIGINAL_PATH:-$PATH}:" == *":$LOCAL_BIN:"* ]]; then
     echo "提示: $LOCAL_BIN 已在系统 PATH 中，可直接全局运行 peer。"
     return
   fi
