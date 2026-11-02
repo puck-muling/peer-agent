@@ -75,6 +75,8 @@ Open a terminal, paste this line and press Enter:
 curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash
 ```
 
+> Need a proxy to reach GitHub (e.g. in mainland China)? Use the "Behind a proxy" line below instead, or the very first download will fail.
+
 It will:
 
 1. download the latest release and install the `peer` command and the skills for each host;
@@ -84,11 +86,13 @@ It will:
 
 Anything already installed and signed in is left alone; if a step fails, it tells you why and what to do next.
 
-- **Behind a proxy (e.g. mainland China)**: GitHub, Claude and OpenAI usually need a proxy. Start your proxy app first, then run this line with your proxy's port. The proxy is also saved for peer (`child_env` in its config), so later Claude / Codex calls use it too.
+- **Behind a proxy (e.g. mainland China)**: GitHub, Claude and OpenAI usually need a proxy. Start your proxy app first, then run this line (**replace both 7890s with your proxy's port**):
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
+  curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
   ```
+
+  The leading `-x` routes the download of the installer script itself through the proxy; the trailing `--proxy` covers everything after that (downloads, installing Claude Code / Codex) and is saved for peer (`child_env` in its config), so later Claude / Codex calls use it too. You need both.
 
 - **Read the script before running it**:
 
@@ -97,6 +101,8 @@ Anything already installed and signed in is left alone; if a step fails, it tell
   less peer-bootstrap.sh
   bash peer-bootstrap.sh
   ```
+
+  Behind a proxy, add `-x http://127.0.0.1:7890` to the first `curl` and run the last line as `bash peer-bootstrap.sh --proxy http://127.0.0.1:7890`.
 
 - **First time using Python on a Mac**: if macOS asks to install the "command line developer tools", click Install, then run the command again.
 - **Windows**: for now, install WSL2 and run the command in the WSL2 terminal.

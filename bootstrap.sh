@@ -3,7 +3,8 @@
 # PeerAgent 一行命令安装入口：
 #   curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash
 # 只做三件事：查最新发布版本 → 下载该版本源码到 ~/.peer-review/src/ → 运行其中的 install.sh。
-# 后面可以跟 install.sh 的参数，例如：... | bash -s -- --proxy http://127.0.0.1:7890
+# 后面可以跟 install.sh 的参数。需要代理时，下载本脚本的 curl 也要走代理（-x），例如：
+#   curl -x http://127.0.0.1:7890 -fsSL …/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
 # 指定版本：... | bash -s -- --version v0.1.3
 
 set -euo pipefail
@@ -52,7 +53,7 @@ if [ -z "$VERSION" ]; then
 fi
 case "$VERSION" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) fail "连不上 GitHub，查不到最新版本。" "国内网络一般需要代理：先打开代理软件，再运行：curl -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:你的代理端口" ;;
+  *) fail "连不上 GitHub，查不到最新版本。" "国内网络一般需要代理：先打开代理软件，再运行（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890" ;;
 esac
 case "$VERSION" in
   *[!A-Za-z0-9._-]*) fail "版本号的写法不对：$VERSION" "应该像 v0.1.3 这样。" ;;
@@ -68,7 +69,7 @@ else
   trap 'rm -rf "$tmp"' EXIT
   echo "   版本：$VERSION（从 GitHub 下载）"
   curl -fsSL -m 300 "$ARCHIVE_URL" -o "$tmp/src.tar.gz" ||
-    fail "下载安装包失败（$ARCHIVE_URL）。" "多半是网络问题：打开代理软件后，在命令末尾加上 --proxy 参数再试，例如 ... | bash -s -- --proxy http://127.0.0.1:7890"
+    fail "下载安装包失败（$ARCHIVE_URL）。" "多半是网络问题：打开代理软件后，用这一行重新安装（两处端口都换成你代理软件里的端口）：curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/$REPO/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890"
   tar -xzf "$tmp/src.tar.gz" -C "$tmp" || fail "安装包解压失败，可能没下载完整。" "请重新运行一次安装命令。"
   extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$extracted" ] && [ -f "$extracted/install.sh" ] || fail "安装包里没有找到 install.sh，下载的内容不对。" "请重新运行一次安装命令；还不行的话到 https://github.com/$REPO/issues 反馈。"
