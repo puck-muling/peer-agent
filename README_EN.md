@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/6e51e140-c110-4447-9d02-287796e750cd
 > [!NOTE]
 > **Notice on Same-Named Projects**: This project (`puck-muling/peer-agent`) is a lightweight **multi-agent safety governance & peer-review middleware** for real-world software engineering (running via local official CLIs, zero third-party pip dependencies, hardened billing gates and circuit breakers). It is completely distinct in architecture and use-case from `hirak99/peer-agent` (an HTTP/FastAPI-based companion agent framework).
 
-For developers already using Claude Code or Codex who want a second review. You need **Python 3.9+ and the official CLI for the model you want to call**. Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS and Linux; on Windows, install and run PeerAgent inside WSL2 (native Windows only gets graceful degradation for file locks and process termination, and `install.sh` does not support it).
+For developers already using Claude Code or Codex who want a second review. You need **Python 3.9+ and the official CLI for the model you want to call** (the one-line installer installs them if missing). Subscription runs still consume quota; actual billing depends on the login mode and tools used. Installation targets macOS and Linux; on Windows, install and run PeerAgent inside WSL2 (native Windows only gets graceful degradation for file locks and process termination, and `install.sh` does not support it).
 
 ## Ecosystem positioning & comparison: Not just a bridge, but a safety governance layer
 
@@ -65,11 +65,46 @@ PeerAgent's moat lies in **encapsulating model interactions within a hardened de
 | Either model from Antigravity | The Antigravity host and the signed-in official CLI for the target model |
 | Direct `peer ask` | Python 3.9+ and the signed-in official CLI for the target model |
 
-PeerAgent does not install these CLIs or log in for you. Prepare the target CLI and confirm it works on its own before installing PeerAgent. A one-way workflow does not require activating an unused calling channel.
+You do not have to prepare these one by one: the one-line installer below checks the machine and installs whatever is missing.
 
-### 30-second quickstart commands
+### One-line install (recommended, macOS / Linux)
 
-With prerequisites ready, this is the installation entry point. Downloads and the first run depend on your network and task size:
+Open a terminal, paste this line and press Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash
+```
+
+It will:
+
+1. download the latest release and install the `peer` command and the skills for each host;
+2. check what this machine is missing: Python, Claude Code, Codex, whether each is signed in, and whether Claude / OpenAI are reachable;
+3. list what it is going to do — **press Enter once** and it installs the missing tools with their official installers, opens the browser for you to sign in, and asks for a proxy address if the network is blocked;
+4. check everything again and tell you how to use it.
+
+Anything already installed and signed in is left alone; if a step fails, it tells you why and what to do next.
+
+- **Behind a proxy (e.g. mainland China)**: GitHub, Claude and OpenAI usually need a proxy. Start your proxy app first, then run this line with your proxy's port. The proxy is also saved for peer (`child_env` in its config), so later Claude / Codex calls use it too.
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh | bash -s -- --proxy http://127.0.0.1:7890
+  ```
+
+- **Read the script before running it**:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/puck-muling/peer-agent/main/bootstrap.sh -o peer-bootstrap.sh
+  less peer-bootstrap.sh
+  bash peer-bootstrap.sh
+  ```
+
+- **First time using Python on a Mac**: if macOS asks to install the "command line developer tools", click Install, then run the command again.
+- **Windows**: for now, install WSL2 and run the command in the WSL2 terminal.
+- The installer only runs the official installers and shows them before running: `curl -fsSL https://claude.ai/install.sh | bash` for Claude Code and `curl -fsSL https://chatgpt.com/codex/install.sh | sh` for Codex. Add `--no-install-deps` to only check without installing.
+
+### Install from source (developers)
+
+Running `./install.sh` from a checkout works the same way and also checks and fills in missing tools:
 
 ```bash
 git clone https://github.com/puck-muling/peer-agent.git
@@ -266,6 +301,18 @@ Refresh or reopen the host and check that the skill is in the configuration dire
 
 ### In mainland China or another restricted network, the proxy port connects but requests fail
 
+**Easiest fix**: rerun the installer with `--proxy http://127.0.0.1:YOUR_PORT`, or add this to `~/.peer-review/config.json`:
+
+```json
+{
+  "child_env": {"HTTPS_PROXY": "http://127.0.0.1:7890", "HTTP_PROXY": "http://127.0.0.1:7890"}
+}
+```
+
+peer runs the Claude / Codex binaries directly, bypassing shell functions or aliases you may use to inject a proxy for `claude` / `codex`, and apps launched from the desktop do not inherit terminal proxy variables. `child_env` covers both cases; `peer doctor` lists the variable names in effect.
+
+`proxy_check` below only checks a port:
+
 `proxy_check` **only attempts a TCP connection to the configured host and port**. It does not configure a proxy or validate HTTP/SOCKS behavior, authentication, DNS, TLS, or model-service reachability. Set your actual local port if you want this check:
 
 ```json
@@ -396,11 +443,7 @@ This existing demo cover contains robot image generation and a redrawn interface
 
 After writing code, we often want another model to check it. Copying code, switching windows, and moving feedback back is tedious. PeerAgent connects that step to the existing session using local signed-in CLIs.
 
-More importantly, **it is forged from hundreds of high-intensity multi-agent production workflows**:
-- Successfully powered **372+ code & plan cross-reviews**, **235+ architectural consultations**, and **283+ cross-model image generations**;
-- Maintained a record of **zero accidental billings** and **zero account bans** throughout high-frequency runs;
-- `approved_auth` has caught and blocked accidental transitions to metered API keys 4 separate times;
-- The `STOP` circuit breaker has repeatedly halted concurrent retry cascades during proxy disruptions, protecting precious subscription accounts.
+It comes from the author's day-to-day multi-agent coding. Real calls (reviews, edits, sandbox enforcement) have been verified on the author's Mac (Apple Silicon); CI runs the unit tests and a clean install on macOS and Linux, but has no accounts and makes no real model calls. If something breaks on another machine or OS, please open an issue.
 
 If you want a dependable, safe, and cost-controlled second pair of eyes across your existing AI coding CLIs, PeerAgent is built for you.
 
