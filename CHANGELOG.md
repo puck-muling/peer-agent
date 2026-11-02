@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-02
+
 ### Security
 - **Claude write calls are now sandboxed (`bin/peer`)**: in `exec` mode Claude's Bash ran unsandboxed and auto-approved, and `--allowedTools Edit,Write` (no path scope) let the Write tool create files anywhere — verified with a real call writing outside the project. Bash now runs in the Claude sandbox (writes only to the project, `--add-dir` directories and `$TMPDIR`; no network; no unsandboxed fallback), Edit / Write are left to `acceptEdits`, which only auto-approves the working directories, and the sandbox-weakening settings check now also covers write calls. The prompt tells Claude not to work around the limits. `claude_exec_sandbox: false` restores the previous behaviour; `peer doctor` reports the setting.
 - **Questions were routed to writable `exec` (`peer route`)**: any edit word made a request writable, so questions and requests for explanation such as `这个函数的实现对吗`, `解释一下这段代码的实现`, `修复了什么` or `创建者是谁` started Codex / Claude in write mode (with a snapshot and the write lock). A request that is a question (question mark, sentence-final `吗` / `么` / `呢`, or words such as `什么` / `怎么` / `是否` / `哪`) or asks for an explanation (`解释` / `原理` …) now goes to `advice` instead, `思路` counts as a plan word, and the hint about starting with `exec` is shown for every read-only result that contained an edit word. Explicit `exec` and plain edit instructions are unchanged.
