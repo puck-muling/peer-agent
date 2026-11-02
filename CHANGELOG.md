@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **README marks 0.1.4 as a public preview**: a notice at the top of all three READMEs says the project is in its trial phase and points to GitHub Issues for feedback.
+
 ### Fixed
 - **Behind a proxy, the very first download did not use it (README, `bootstrap.sh`)**: in `curl … | bash -s -- --proxy URL`, `--proxy` only reaches the script on the right; the `curl` that downloads `bootstrap.sh` itself went direct and failed with `Failed to connect` in mainland China, before any of the installer's guidance could appear. The documented command and the hints in `bootstrap.sh` are now `curl -x URL -fsSL …/bootstrap.sh | bash -s -- --proxy URL`, and the plain command is followed by a pointer to it. Verified in a clean environment without proxy variables: the old line fails, the new one installs.
 
