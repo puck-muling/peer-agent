@@ -23,89 +23,75 @@ description: 在 Codex 聊天中通过 /claude、$claude 或明确调用 Claude 
 
 ## 调用方式
 
-以提升权限通过终端工具运行下述 Python 结构：
+分两步。用户原文只经文件编辑工具落盘，**严禁**把用户原文写进 Python / Shell 源码（字符串字面量、heredoc、echo 都不行），避免引号、反斜杠或换行破坏脚本或被当成代码执行；脚本只接收文件路径。
+
+1. **落盘请求文件（文件编辑工具，如 apply_patch）**：在工作目录下新建 `.peer-review/requests/<YYYYMMDD-HHMMSS>-<6 位随机字母数字>-codex-claude.md`（随机段避免同一秒两次调用互相覆盖）。第一行写 `# 任务`，第二行起写用户原始任务及目标路径，逐字照抄用户原话，不改写、不转义。
+2. **调用（提升权限运行下述 Python）**：只把第一行 `__REQ_FILE__` 换成上一步的文件路径（路径里不能有引号），其余按需改 `effort` / `allow_web`：
 
 ```python
-import json, os, re, shutil, subprocess, sys
+import os, re, shutil, subprocess, sys, json
 from pathlib import Path
 
+req_file = Path("__REQ_FILE__").expanduser().resolve()
 workdir = Path(os.getcwd()).resolve()
-task_prompt = "用户原始任务及目标路径"
 effort = "high"  # 默认高；用户写“超高”时改为 "xhigh"
+allow_web = None  # 只读调用是否联网：None 跟随 config（默认联网）；用户明确要求不联网时改为 False
 timeout_seconds = 1800
+
+# 只接受第一步落盘的请求文件
+if (req_file.parent != workdir / ".peer-review" / "requests"
+        or not re.fullmatch(r"\d{8}-\d{6}-[A-Za-z0-9]{4,}-codex-claude\.md", req_file.name)
+        or not req_file.is_file()):
+    raise SystemExit("【错误】请求文件不是第一步落盘的路径或不存在：%s" % req_file)
 
 peer_bin = shutil.which("peer")
 if not peer_bin:
     peer_home = os.environ.get("PEER_HOME") or os.path.expanduser("~/.peer-review")
-    candidate = os.path.join(peer_home, "bin", "peer")
-    if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-        peer_bin = candidate
-    else:
-        local_candidate = os.path.expanduser("~/.local/bin/peer")
-        if os.path.exists(local_candidate) and os.access(local_candidate, os.X_OK):
-            peer_bin = local_candidate
+    for candidate in (os.path.join(peer_home, "bin", "peer"), os.path.expanduser("~/.local/bin/peer")):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            peer_bin = candidate
+            break
+if not peer_bin:
+    # 未找到 peer 调度工具时严格报错，拒绝无保护裸跑
+    raise SystemExit("【错误】未找到 peer 调度工具（请运行 ./install.sh 或确保 peer 在 PATH 中）。所有跨端调用必须经过 peer 以保证沙箱安全、快照回滚与熔断保护。")
 
-# 1. 优先通过 peer 调度（享有快照、diff 与统一熔断保护）
-if peer_bin:
-    # 意图识别分发（防误升级：只读、方案、评估、建议优先）
-    has_readonly = any(w in task_prompt for w in [
-        "只读", "仅查看", "仅分析", "仅排查", "仅审阅", "只审阅",
-        "无需修改", "不要修改", "不得修改", "严禁修改", "禁止修改", "请勿修改"
-    ])
-    has_plan = any(w in task_prompt for w in ["方案", "计划", "怎么做", "设计", "架构", "思路", "评估", "评估是否"])
-    has_advice = any(w in task_prompt for w in ["建议", "结论", "为什么", "分析", "看看", "如何"])
-    has_review = any(w in task_prompt for w in ["审阅", "review", "审查", "检查", "排查", "挑刺", "验收"])
+# 1. 任务类型与授权原话统一由 peer route 判定（三端共用同一套规则，否定与只读优先）
+route = subprocess.run([peer_bin, "route", "--request", str(req_file)], capture_output=True, text=True)
+if route.returncode != 0:
+    print(route.stdout + route.stderr, file=sys.stderr)
+    sys.exit(route.returncode)
+if route.stderr.strip():
+    print(route.stderr.strip(), file=sys.stderr)  # 被判为只读时的提示
+parsed = json.loads(route.stdout)
+kind, quote = parsed["kind"], parsed["quote"]
+if kind == "image":
+    raise SystemExit("【提示】Claude 没有图片生成能力：请改用 /codex 生图，或让 Claude 用 exec 写 SVG / 绘图代码。")
 
-    clean_prompt = re.sub(r"(不得|严禁|不要|禁止|不可|避免|不需要|请勿|勿|别|评估|是否)[\u4e00-\u9fa5]{0,10}(修改|编辑|写入|改动|变更|创建|新建|重构|编写|删除)", "", task_prompt)
-    has_write = any(w in clean_prompt for w in ["修改", "实现", "编辑", "写入", "创建", "新建", "修复", "重构", "编写", "删除"])
+# 2. 通过 peer 调度（享有快照、diff 与统一熔断保护）；只有 exec 可写并带上授权原话
+ask_cmd = [peer_bin, "ask", "claude", kind, "--request", str(req_file), "--cwd", str(workdir), "--caller", "Codex"]
+if kind == "exec":
+    ask_cmd += ["--quote", quote]
+elif allow_web is not None:
+    ask_cmd += ["--web" if allow_web else "--no-web"]
+if effort:
+    ask_cmd += ["--effort", effort]
 
-    # 只有明确要求执行/修改，且不属于方案、审阅、建议或只读时，才进入可写 exec
-    is_write = has_write and not (has_readonly or has_plan or has_advice or has_review)
+proc = subprocess.run(ask_cmd, capture_output=True, text=True)
+print(proc.stdout)
+if proc.returncode != 0:
+    print(proc.stderr, file=sys.stderr)
+    sys.exit(proc.returncode)
 
-    if is_write:
-        kind = "exec"
-    elif has_plan:
-        kind = "plan"
-    elif has_advice:
-        kind = "advice"
-    else:
-        kind = "review"
-
-    # 落盘请求文件
-    req_dir = workdir / ".peer-review" / "requests"
-    req_dir.mkdir(parents=True, exist_ok=True)
-    import datetime
-    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    req_file = req_dir / f"{ts}-codex-claude.md"
-    req_file.write_text(f"# 任务\n{task_prompt}\n", encoding="utf-8")
-
-    ask_cmd = [peer_bin, "ask", "claude", kind, "--request", str(req_file), "--cwd", str(workdir), "--caller", "Codex"]
-    if is_write:
-        ask_cmd += ["--quote", task_prompt]
-    if effort:
-        ask_cmd += ["--effort", effort]
-
-    proc = subprocess.run(ask_cmd, capture_output=True, text=True)
-    print(proc.stdout)
-    if proc.returncode != 0:
-        print(proc.stderr, file=sys.stderr)
-        sys.exit(proc.returncode)
-
-    # 提取运行编号并等待
-    match = re.search(r"运行编号：([0-9a-zA-Z_-]+)", proc.stdout)
-    if match:
-        run_id = match.group(1).strip()
-        wait_cmd = [peer_bin, "wait", run_id, "--cwd", str(workdir), "--timeout", str(timeout_seconds)]
-        wait_proc = subprocess.run(wait_cmd)
-        sys.exit(wait_proc.returncode)
-    else:
-        sys.exit(0)
-
-# 未找到 peer 调度工具时严格报错，拒绝无保护裸跑
-raise SystemExit("【错误】未找到 peer 调度工具（请运行 ./install.sh 或确保 peer 在 PATH 中）。所有跨端调用必须经过 peer 以保证沙箱安全、快照回滚与熔断保护。")
+# 3. 提取运行编号并等待；退出码 10 只再次 wait，绝不重新 ask
+match = re.search(r"运行编号：([0-9a-zA-Z_-]+)", proc.stdout)
+if match:
+    wait_cmd = [peer_bin, "wait", match.group(1).strip(), "--cwd", str(workdir), "--timeout", str(timeout_seconds)]
+    sys.exit(subprocess.run(wait_cmd).returncode)
+sys.exit(0)
 ```
 
 ## 等待与汇报
 
 - 汇报由 `peer wait` 自动格式化输出（包含状态、模型、用量、耗时及改动 diff）。
+- 退出码 10 表示还在运行：只再次运行 `peer wait <运行编号> --cwd <工作目录>`，不要重新 ask。
 - 执行完成后由 Codex 核对改动与生成结果，并向用户呈现。

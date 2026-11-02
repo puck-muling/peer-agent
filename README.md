@@ -132,13 +132,14 @@ peer doctor
 
 ### 审阅、方案和执行怎么区分
 
-斜杠技能按关键词判断意图，属于启发式路由，并不能理解所有自然语言表达。下面的匹配顺序对应 **Claude Code 中的 `/codex` 技能**：
+斜杠技能按关键词判断意图，属于启发式路由，并不能理解所有自然语言表达。三端技能（Claude Code 的 `/codex`、Codex 的 `/claude`、Antigravity 的 `/codex` 与 `/claude`）都调用同一个 `peer route --request <任务说明>` 判定，规则一致；任务说明有“# 任务”小节时只看该小节。匹配顺序：
 
 1. 开头明确写 `exec` / `review` / `plan` / `advice` / `image` 时按该类型处理；显式 `exec` 遇到只读或禁止修改要求会降级为 `review`。
 2. 未显式指定时，否定词和审阅词优先于修改词。例如“审阅当前修改”“检查修复结果”按 `review` 处理。
 3. 随后依次匹配方案词、出图词、修改词和建议词；未命中时默认 `review`。
+4. 提问或要讲解的句子（带问号、句末“吗 / 呢”，或含“什么 / 怎么 / 是否 / 解释 / 原理”等）即使出现“实现”“修复”“创建”等词，也不会进入可写的 `exec`，按 `advice` 处理。“能帮我修复这个 bug 吗”这类请求同样只读，要修改请以 `exec` 开头或直接写成指令。
 
-Codex 中的 `/claude` 和 Antigravity 技能使用不同的分类规则，不能假定各端优先级完全相同；以对应技能和实际调用类型为准。需要确定类型时，可直接用 `peer ask` 传入，不经过斜杠技能的意图判断。
+需要确定类型时，可直接用 `peer ask` 传入，不经过斜杠技能的意图判断；也可以先用 `peer route` 查看某份任务说明会被判成什么类型。
 
 `review`、`plan`、`advice` 采用只读执行配置；`exec`、`image` 可写，需要用户授权原话。请写清允许修改哪些文件，并核对发起的任务类型。
 
@@ -202,13 +203,14 @@ peer since-freeze ./方案-v2_冻结v001.md
 | :--- | :--- |
 | `peer doctor` | `[--approve]`：环境诊断与安全锁自检（巡检 CLI、登录一致性与 STOP 熔断锁）；显式 `--approve` 时记录当前可识别的登录类别为新基线 |
 | `peer ask <codex\|claude> <kind>` | `--request <文件> --cwd <目录>`；`kind` 为 `review` / `plan` / `advice` / `exec` / `image`，其中 `image` 仅 Codex 支持 |
-| 调用可选参数 | `--quote <原话>`、`--model <模型>`、`--effort <强度>`、`--service-tier <层级>`、`--add-dir <目录>`、`--caller <名称>`、`--foreground`；可写类型必须有 `--quote` |
+| 调用可选参数 | `--quote <原话>`、`--model <模型>`、`--effort <强度>`、`--service-tier <层级>`、`--add-dir <目录>`、`--caller <名称>`、`--foreground`、`--web` / `--no-web`（只读调用 Claude 时本次开放 / 关闭 WebSearch / WebFetch，默认开放）；可写类型必须有 `--quote` |
 | `peer wait <运行编号>` | `--cwd <目录> [--timeout <秒>]`：等待原任务并显示报告 |
 | `peer status [运行编号]` | `--cwd <目录>`：查看某次任务或最近 10 次任务 |
 | `peer freeze <方案文档>` | `--cwd <目录> [--quote <原话>] [--review-receipt <目录>]`：保存冻结副本与指纹 |
 | `peer verify <冻结版文件>` | 比较冻结副本与记录的 SHA-256 |
 | `peer since-freeze <冻结版文件>` | 比较项目与冻结时快照，并生成改动记录 |
 | `peer stats` | 显示当日调用与可取得的用量统计；不等同于官方账单 |
+| `peer route` | `--request <文件>`：按任务说明判断类型，输出 `{"kind", "quote"}`；三端技能共用 |
 
 </details>
 
@@ -217,14 +219,14 @@ peer since-freeze ./方案-v2_冻结v001.md
 | 机制 | 实际做什么 | 需要知道的限制 |
 | :--- | :--- | :--- |
 | 登录类别检查 (`approved_auth`) | 调用前比较当前类别与 `approved_auth`，不一致时停止，退出码 3；配套工具为 `peer doctor [--approve]` | 不能验证授权范围、可用余额或最终账单。支持已有 CLI 订阅登录，仍消耗额度；API 登录按相应规则计费 |
-| 只读任务 | 给 Codex 设置 `read-only` 沙箱；给 Claude 限制工具和 Bash 沙箱权限，并在任务说明中要求只读 | 依赖目标 CLI 与系统沙箱实现；PeerAgent 仍会写入任务、日志等过程文件，不代表整台机器不写文件 |
+| 只读任务 | 给 Codex 设置 `read-only` 沙箱；给 Claude 限制工具和 Bash 沙箱权限，默认开放 WebSearch / WebFetch 便于查资料（可用 `claude_read_web: false` 或 `--no-web` 关闭），并在任务说明中要求只读 | 依赖目标 CLI 与系统沙箱实现；PeerAgent 仍会写入任务、日志等过程文件，不代表整台机器不写文件 |
 | 可写授权 | `exec` / `image` 要求非空授权引文，使用可写配置 | 引文存在不等于程序理解了授权；实施范围仍需人和执行方核对 |
 | 改前快照 | 保存可复制的文本内容并记录文件信息，改后对比 | 跳过部分目录和疑似敏感内容；大文件、二进制与总量等有限制，不是完整备份或自动回滚 |
 | 防递归标记 | 子进程继承 `PEER_DEPTH` 后，嵌套 `peer ask` 被拒绝，退出码 2 | 只覆盖经过该入口且保留标记的调用，不能阻止所有可能的模型循环 |
 | STOP 熔断锁 (`STOP`) | 检测到特定封禁或地区错误后，写入停机锁文件阻止该渠道后续调用；配套工具为 `peer doctor` 诊断与手动急停/复位 | 依赖错误匹配，不能保证避免封号；需人工排查，严禁 Agent 自动删除 STOP 文件 |
 | 独立审阅要求 | 提示审阅者先查源码、需求和 diff，再判断主张 | 不保证模型意见正确、互不影响或必然达成共识 |
 
-快照默认跳过 `.git`、`node_modules`、`.peer-review` 等目录。单个文本文件超过 2 MiB 不复制，超过 64 MiB 的文件只记录大小和修改时间；复制总量上限 300 MiB，文件数上限 40,000。具体规则见 [`bin/peer`](./bin/peer)，完整权限说明见 [SECURITY.md](./SECURITY.md)。
+快照默认跳过 `.git`、`node_modules`、`.peer-review` 等目录。单个文本文件超过 2 MiB 不复制，超过 8 MiB 的文件只记录大小和修改时间；对比时大小和修改时间都没变的文件沿用快照指纹，不再重新计算（与 git 的判断方式相同）；复制总量上限 300 MiB，文件数上限 40,000。具体规则见 [`bin/peer`](./bin/peer)，完整权限说明见 [SECURITY.md](./SECURITY.md)。
 
 ### 核心安全锁与管理工具：防静默扣费 & 致命封号熔断
 
@@ -233,7 +235,7 @@ peer since-freeze ./方案-v2_冻结v001.md
 #### 1. `approved_auth` 认证防静默扣费锁
 
 * **拦截原理**：PeerAgent 在发起任何调用（`peer ask`）前，会强制调用官方 CLI 的真实鉴权检查并扫描环境变量，把当前登录方式（`subscription` / `api` / `unknown`）与配置文件中的 `approved_auth`（默认均为 `subscription`）逐一比对。
-* **为什么防扣费**：如果你平常使用 Claude Pro 或 ChatGPT Plus 订阅，但终端环境中无意间注入了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，或者 CLI 登录态失效掉入 API 计费模式，PeerAgent 检测到当前登录状态与已核准模式（`approved_auth`）不一致时，会**在发起调用前主动阻断并退出**（退出码 3），明确输出差异并拒绝调用。它只比对登录类别，不能验证授权范围、可用余额或最终账单。
+* **为什么防扣费**：如果你平常使用 Claude Pro 或 ChatGPT Plus 订阅，但 CLI 登录态失效或被切换成 API 计费模式，PeerAgent 检测到当前登录状态与已核准模式（`approved_auth`）不一致时，会**在发起调用前主动阻断并退出**（退出码 3），明确输出差异并拒绝调用。环境变量里的 Key 两端处理一致：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`CODEX_API_KEY` 都只会在子进程环境中被移除并给出提示，登录类别按官方 CLI 在同样（已去掉 Key）的环境里回报的实际登录方式判定，不会因为环境里残留 Key 就误判或阻断。它只比对登录类别，不能验证授权范围、可用余额或最终账单。
 * **配套管理工具**：
   * **诊断工具 `peer doctor`**：一键打印各渠道登录状态及与 `approved_auth` 的比对结果（显示 `✅ 与已确认一致` 或 `⚠️ 与已确认不一致`）。
   * **授权工具 `peer doctor --approve`**：若你确认有意使用官方 API 计费，可在人工核验终端输出与资费预期后，显式运行该命令将当前模式固化为新基线。此操作严禁由 AI Agent 自动调用。
@@ -318,7 +320,9 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
     "write": 60
   },
   "proxy_check": null,
-  "codex_disable_apps": false
+  "codex_disable_apps": false,
+  "claude_read_web": true,
+  "child_env": {}
 }
 ```
 
@@ -334,6 +338,8 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 | `timeout_minutes` | 读/写任务最长运行时间（分钟），到期终止子进程；不证明远端未处理请求 |
 | `proxy_check` | 可选 `[主机, 端口]` TCP 检测，不配置代理 |
 | `codex_disable_apps` | 传参禁用 Codex Apps；默认 `false`，生图任务会单独禁用 |
+| `claude_read_web` | 只读调用是否给 Claude 开放 WebSearch / WebFetch；默认 `true`。⚠️ 审阅外部或不可信代码、项目里有密钥时，被审内容里的提示注入可能诱导模型借联网工具外传读到的内容；不需要联网时建议设为 `false`，或按次加 `peer ask --no-web`。`peer doctor` 会显示当前状态 |
+| `child_env` | 附加给 Claude / Codex 子进程的环境变量，如 `{"HTTPS_PROXY": "http://127.0.0.1:7890"}`。peer 直接调用 CLI 程序，不经过 shell 里的同名函数或别名，从桌面 App 发起时也未必继承终端代理；计费相关变量（`ANTHROPIC_*`、`OPENAI_API_KEY` 等）不接受。`peer doctor` 只显示变量名 |
 
 如果只想固定高强度、继续跟随模型设置，可合并下面的配置片段：
 
@@ -359,7 +365,7 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 | 组成 | 路径与说明 |
 | :--- | :--- |
-| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,248 行，仅用 Python 标准库，无常驻守护进程 |
+| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,516 行，仅用 Python 标准库，无常驻守护进程 |
 | CLI 适配技能 | [`skills/`](./skills/)，适配 Claude Code、Codex 与 Antigravity，非这些厂商官方出品 |
 | 任务模板 | [`templates/`](./templates/)，共 5 份：`review.md`、`plan.md`、`advice.md`、`exec.md`、`image.md` |
 | 安装器 | [`install.sh`](./install.sh)，默认文件复制，可显式选择软链接 |

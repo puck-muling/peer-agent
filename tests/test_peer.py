@@ -30,15 +30,11 @@ _loader.exec_module(peer)
 
 
 def run_skill_router(text, workdir):
-    """执行技能文件中的路由代码，避免用测试内的副本掩盖真实回归。"""
-    skill_file = os.path.join(REPO_DIR, "skills", "claude", "codex", "SKILL.md")
-    with open(skill_file, encoding="utf-8") as f:
-        content = f.read()
-    code = re.search(r"python3 -c '\n(.*?)\n' \"\$REQ_FILE\"", content, re.S).group(1)
+    """按技能落盘的格式写请求文件，再走真实的 peer route 子命令（三端技能共用这一个入口）。"""
     request = os.path.join(workdir, "request.md")
     with open(request, "w", encoding="utf-8") as f:
         f.write("# 任务\n%s\n" % text)
-    return subprocess.run([sys.executable, "-c", code, request],
+    return subprocess.run([sys.executable, peer_bin_path, "route", "--request", request],
                           capture_output=True, text=True, check=True)
 
 
@@ -406,16 +402,25 @@ class TestPeerExtended(unittest.TestCase):
             self.assertEqual(cat, "subscription")
             self.assertIn("oauth_token", desc)
 
-    def test_claude_auth_detects_key_before_environment_filtering(self):
-        """检测原始环境中的 Key，但不改变子进程的过滤策略或泄露凭证。"""
+    def test_claude_auth_with_env_key_follows_cli_status(self):
+        """环境里有 Key 时按 CLI 实际回报的登录方式判定（子进程会去掉 Key），Key 只作提示且不泄露。"""
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-only-key"}, clear=True):
-            with patch.object(peer, "run_quick") as run:
+            sub = (0, '{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}', "")
+            with patch.object(peer, "run_quick", return_value=sub) as run:
                 cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
-            self.assertEqual(cat, "api")
+            self.assertEqual(cat, "subscription")
             self.assertIn("将被忽略", desc)
             self.assertNotIn("test-only-key", desc)
             self.assertNotIn("ANTHROPIC_API_KEY", peer.child_env())
-            run.assert_not_called()
+            run.assert_called_once()
+            api = (0, '{"loggedIn": true, "authMethod": "api_key"}', "")
+            with patch.object(peer, "run_quick", return_value=api):
+                cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
+            self.assertEqual(cat, "api")
+            with patch.object(peer, "run_quick", return_value=(1, "", "")):
+                cat, desc = peer.auth_state(peer.DEFAULT_CONFIG, "claude")
+            self.assertEqual(cat, "unknown")
+            self.assertIn("将被忽略", desc)
 
     def test_codex_key_without_login_remains_unknown_with_guidance(self):
         """有 Key 但未登录时仍阻断，不以环境变量代替已确认的登录状态。"""
@@ -547,8 +552,10 @@ class TestPeerExtended(unittest.TestCase):
         os.symlink(sys.executable, os.path.join(stub_bin, "python3"))
         stub_log = os.path.join(self.test_dir, "peer-calls.log")
         with open(os.path.join(stub_bin, "peer"), "w", encoding="utf-8") as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$@" >> "$PEER_STUB_LOG"\n'
-                    '[ "$1" = ask ] && echo "运行编号：RUN-1"\nexit 0\n')
+            # route 交给真实 peer 判定，其余子命令只记录参数
+            f.write('#!/bin/sh\n[ "$1" = route ] && exec "%s" "%s" "$@"\n'
+                    'printf "%%s\\n" "$@" >> "$PEER_STUB_LOG"\n'
+                    '[ "$1" = ask ] && echo "运行编号：RUN-1"\nexit 0\n' % (sys.executable, peer_bin_path))
         os.chmod(os.path.join(stub_bin, "peer"), 0o755)
         env = {"HOME": self.test_dir, "PEER_HOME": os.path.join(self.test_dir, "peer-home"),
                "PATH": stub_bin + ":/usr/bin:/bin", "PEER_STUB_LOG": stub_log}
@@ -1452,6 +1459,486 @@ class TestWriteLockAndLifecycle(unittest.TestCase):
         self.assertFalse(os.path.exists(self.lock))
         with open(os.path.join(rdir, "status.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["state"], "failed")
+
+    def test_dispatcher_releases_write_lock_when_stop_lock_active(self):
+        """启动前命中 STOP 熔断时也必须释放本次写锁，不能让项目卡在“已有可写调用”。"""
+        rdir = self.make_run("RUN_STOPPED", [sys.executable, "-c", "print('x')"], mode="write")
+        with patch.object(peer, "GLOBAL_LOG", os.path.join(self.root, "global.jsonl")), \
+             patch.object(peer, "get_active_stop_lock", return_value=("/tmp/peer-test-STOP", "测试")):
+            peer.cmd_run(rdir)
+        self.assertFalse(os.path.exists(self.lock))
+        with open(os.path.join(rdir, "status.json"), encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["circuit_breaker"])
+
+
+def run_codex_skill_router(text):
+    """Codex 端 /claude 技能同样经 peer route 判定类型：按技能落盘格式直接调用同一个路由函数。"""
+    return peer.route_request("# 任务\n%s\n" % text)[0]
+
+
+class TestReviewRoundFixes(unittest.TestCase):
+    """覆盖本轮复核：两端技能否定路由、Claude 只读沙箱参数与设置继承、errors[] 熔断、since-freeze 重锚、路径规范化。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = os.path.realpath(tmp.name)
+
+    # ---------------------------------------------------------- 技能路由
+    def test_codex_skill_routing_negations_and_subcommands(self):
+        cases = {
+            "不修改文件，只汇报结果": "review", "不要修复，给我列出问题": "review",
+            "不改代码，说说原因": "review", "别动配置文件": "review",
+            "do not modify anything, just report": "review",
+            "审阅当前修改": "review", "检查修复结果": "review",
+            "修复登录问题": "exec", "实现导出功能": "exec", "删除无用的临时脚本": "exec",
+            "exec 修复 bug": "exec", "exec 不修改文件": "review",
+            "review 修复方案": "review", "plan 重构登录": "plan", "advice 修复顺序": "advice",
+            "出个方案": "plan", "给个建议": "advice", "随便聊聊": "review",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(run_codex_skill_router(text), expected)
+
+    def test_both_skills_agree_on_negated_requests(self):
+        for text in ("不修改文件，只汇报结果", "不要修复，给我列出问题", "exec 不修改文件"):
+            with self.subTest(text=text):
+                self.assertEqual(json.loads(run_skill_router(text, self.test_dir).stdout)["kind"], "review")
+                self.assertEqual(run_codex_skill_router(text), "review")
+
+    # ---------------------------------------------------------- Claude 只读沙箱
+    def claude_read_args(self, add_dirs):
+        me = {"model": "", "model_pass": False, "effort": "", "effort_pass": False}
+        return peer.build_args(peer.DEFAULT_CONFIG, "claude", "review", "p", self.test_dir, add_dirs, me)
+
+    def test_claude_readonly_deny_rules_use_absolute_form(self):
+        """附加目录按 Claude 权限规则的绝对路径写法 //abs/** 拒绝编辑，且只读模式不开放 Edit/Write。"""
+        extra = os.path.join(self.test_dir, "extra")
+        args = self.claude_read_args([extra, "/"])
+        settings = json.loads(args[args.index("--settings") + 1])
+        deny = settings["permissions"]["deny"]
+        self.assertIn("Edit(/%s/**)" % extra, deny)
+        self.assertTrue(("Edit(/%s/**)" % extra).startswith("Edit(//"))
+        self.assertIn("Edit(//**)", deny)
+        self.assertFalse([r for r in deny if "///" in r], deny)
+        tools = args[args.index("--tools") + 1].split(",")
+        self.assertNotIn("Edit", tools)
+        self.assertNotIn("Write", tools)
+        self.assertFalse(settings["sandbox"]["allowUnsandboxedCommands"])
+
+    def test_claude_sandbox_weakeners_detected(self):
+        cfg_dir = os.path.join(self.test_dir, "claude-cfg")
+        proj = os.path.join(self.test_dir, "proj")
+        os.makedirs(cfg_dir)
+        os.makedirs(os.path.join(proj, ".claude"))
+        env = {"CLAUDE_CONFIG_DIR": cfg_dir}
+        self.assertEqual(peer.claude_sandbox_weakeners(proj, env), [])
+        with open(os.path.join(cfg_dir, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"sandbox": {"excludedCommands": ["docker"]}}, f)
+        with open(os.path.join(proj, ".claude", "settings.local.json"), "w", encoding="utf-8") as f:
+            json.dump({"sandbox": {"filesystem": {"disabled": True}}}, f)
+        with open(os.path.join(proj, ".claude", "settings.json"), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        found = peer.claude_sandbox_weakeners(proj, env)
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(any("excludedCommands" in x for x in found))
+        self.assertTrue(any("filesystem.disabled" in x for x in found))
+
+    def test_claude_readonly_ask_refuses_weakened_sandbox_before_any_request(self):
+        cfg_dir = os.path.join(self.test_dir, "claude-cfg")
+        proj = os.path.join(self.test_dir, "proj")
+        os.makedirs(cfg_dir)
+        os.makedirs(proj)
+        with open(os.path.join(cfg_dir, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"sandbox": {"excludedCommands": ["git"]}}, f)
+        stub = os.path.join(self.test_dir, "claude")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(stub, 0o755)
+        req = os.path.join(self.test_dir, "req.md")
+        with open(req, "w", encoding="utf-8") as f:
+            f.write("# 任务\n审阅\n")
+        cfg = dict(peer.DEFAULT_CONFIG)
+        cfg["bins"] = {"claude": stub, "codex": stub}
+
+        class Args:
+            agent, kind, cwd, quote, request = "claude", "review", proj, "", req
+            add_dir, model, effort, service_tier, caller = [], "", "", "", "test"
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg_dir}), \
+             patch.object(peer, "check_circuit_breaker"), \
+             patch.object(peer, "load_config", return_value=cfg), \
+             patch.object(peer, "auth_state", side_effect=AssertionError("不应探测登录")), \
+             redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                peer.cmd_ask(Args, env={})
+        self.assertEqual(cm.exception.code, 3)
+        self.assertFalse(os.path.exists(os.path.join(proj, ".peer-review", "runs")) and
+                         os.listdir(os.path.join(proj, ".peer-review", "runs")))
+
+    # ---------------------------------------------------------- errors[] 熔断
+    def write_result(self, result):
+        p = os.path.join(self.test_dir, "stdout.log")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5-5"}) + "\n")
+            f.write(json.dumps(result) + "\n")
+        return p
+
+    def test_parse_claude_extracts_structured_errors_for_circuit_breaker(self):
+        """封禁原因只在 result.errors[] 且排在长文本之后时，熔断扫描仍须命中。"""
+        p = self.write_result({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                               "result": "", "num_turns": 1,
+                               "errors": ["x" * 500, "Your account has been disabled by policy"]})
+        info = peer.parse_claude(p)
+        self.assertFalse(info["ok"])
+        self.assertIn("errors：", info["error"])
+        self.assertLess(len(info["error"]), 600)
+        scan_text = "\n".join(x for x in (info.get("error"), info.get("error_detail")) if x)
+        pat, _, cat = peer.scan_fatal_auth_error(None, scan_text, state="failed", exit_code=1)
+        self.assertEqual(cat, "banned", info)
+        # 只看截断后的展示文本时会漏检，证明 error_detail 必不可少
+        self.assertEqual(peer.scan_fatal_auth_error(None, info["error"], state="failed", exit_code=1)[2], "")
+
+    def test_parse_claude_errors_non_string_and_limit(self):
+        p = self.write_result({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                               "errors": [{"message": "usage limit reached"}]})
+        info = peer.parse_claude(p)
+        self.assertEqual(info.get("interrupt"), "rate_limit")
+        ok = peer.parse_claude(self.write_result({"type": "result", "subtype": "success", "result": "好"}))
+        self.assertTrue(ok["ok"])
+        self.assertNotIn("error_detail", ok)
+
+    # ---------------------------------------------------------- since-freeze
+    def freeze(self, proj, plan_rel):
+        plan = os.path.join(proj, plan_rel)
+        os.makedirs(os.path.dirname(plan), exist_ok=True)
+        with open(plan, "w", encoding="utf-8") as f:
+            f.write("# Plan\n")
+
+        class FreezeArgs:
+            cwd, plan_path, quote, review_receipt = proj, plan, "", ""
+        FreezeArgs.plan = plan
+        with redirect_stdout(StringIO()):
+            peer.cmd_freeze(FreezeArgs)
+        return re.sub(r"\.md$", "_冻结v001.md", plan)
+
+    def make_proj(self, name):
+        proj = os.path.join(self.test_dir, name)
+        os.makedirs(proj)
+        with open(os.path.join(proj, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('v1')\n")
+        return proj
+
+    def since(self, frozen, cwd=None):
+        class SinceArgs:
+            pass
+        SinceArgs.frozen, SinceArgs.cwd = frozen, cwd
+        out = StringIO()
+        with redirect_stdout(out):
+            peer.cmd_since_freeze(SinceArgs)
+        return out.getvalue()
+
+    def test_since_freeze_plan_in_subdir_reanchors_to_project_root(self):
+        proj = self.make_proj("p1")
+        self.freeze(proj, os.path.join("docs", "plan.md"))
+        moved = os.path.join(self.test_dir, "p1-moved")
+        shutil.move(proj, moved)
+        with open(os.path.join(moved, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('v2')\n")
+        out = self.since(os.path.join(moved, "docs", "plan_冻结v001.md"))
+        self.assertIn("app.py", out)
+        self.assertFalse(os.path.exists(os.path.join(moved, "docs", ".peer-review")))
+
+    def test_since_freeze_on_copied_project_compares_the_copy(self):
+        proj = self.make_proj("p2")
+        self.freeze(proj, "plan.md")
+        copy = os.path.join(self.test_dir, "p2-copy")
+        shutil.copytree(proj, copy)
+        with open(os.path.join(copy, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('copy')\n")
+        self.assertIn("app.py", self.since(os.path.join(copy, "plan_冻结v001.md")))
+        # 原项目没改，对原冻结版对比不应出现 app.py 改动
+        self.assertNotIn("app.py", self.since(os.path.join(proj, "plan_冻结v001.md")))
+        # --cwd 规范化：带尾部斜杠和 .. 的写法等价于项目根
+        self.assertIn("app.py", self.since(os.path.join(copy, "plan_冻结v001.md"),
+                                           cwd=os.path.join(copy, "docs", "..") + os.sep))
+
+    def test_since_freeze_legacy_meta_and_ambiguous_location(self):
+        proj = self.make_proj("p3")
+        frozen = self.freeze(proj, os.path.join("docs", "plan.md"))
+        meta_p = peer.frozen_meta_path(frozen)
+        with open(meta_p, encoding="utf-8") as f:
+            meta = json.load(f)
+        for k in ("frozen_rel", "snapshot_rel"):
+            meta.pop(k)
+        with open(meta_p, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        moved = os.path.join(self.test_dir, "p3-moved")
+        shutil.move(proj, moved)
+        with open(os.path.join(moved, "app.py"), "w", encoding="utf-8") as f:
+            f.write("print('v2')\n")
+        self.assertIn("app.py", self.since(os.path.join(moved, "docs", "plan_冻结v001.md")))
+        # 冻结版被单独挪到相对位置对不上的地方：无法确定项目根，必须要求 --cwd
+        lone = os.path.join(self.test_dir, "lone")
+        os.makedirs(lone)
+        for p in (os.path.join(moved, "docs", "plan_冻结v001.md"),
+                  peer.frozen_meta_path(os.path.join(moved, "docs", "plan_冻结v001.md"))):
+            shutil.copy2(p, lone)
+        with self.assertRaises(SystemExit), patch("sys.stderr", new_callable=StringIO):
+            self.since(os.path.join(lone, "plan_冻结v001.md"))
+
+    def test_freeze_snapshot_dirs_never_collide(self):
+        proj = self.make_proj("p4")
+        with patch.object(peer, "ts", return_value="20260101-000000"):
+            a = self.freeze(proj, "abcdefghijklmnopqrstuvwxyz-one.md")
+            b = self.freeze(proj, "abcdefghijklmnopqrstuvwxyz-two.md")
+        snaps = []
+        for fz in (a, b):
+            with open(peer.frozen_meta_path(fz), encoding="utf-8") as f:
+                snaps.append(json.load(f)["snapshot"])
+        self.assertNotEqual(snaps[0], snaps[1])
+        self.assertTrue(all(os.path.isfile(os.path.join(s, "manifest.json")) or os.listdir(s) for s in snaps))
+
+    # ---------------------------------------------------------- 路径规范化
+    def test_symlinked_install_finds_repo_templates_and_paths_are_absolute(self):
+        link = os.path.join(self.test_dir, "bin", "peer")
+        os.makedirs(os.path.dirname(link))
+        os.symlink(peer_bin_path, link)
+        code = ("import sys, importlib.util; from importlib.machinery import SourceFileLoader\n"
+                "l = SourceFileLoader('peer', sys.argv[1]); s = importlib.util.spec_from_loader('peer', l)\n"
+                "m = importlib.util.module_from_spec(s); l.exec_module(m)\n"
+                "print(m.TEMPLATES); print(m.PEER_HOME); print(m.CONFIG_PATH)\n")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PEER_")}
+        env.update({"PEER_HOME": "rel-home", "PEER_CONFIG": "rel.json"})
+        res = subprocess.run([sys.executable, "-c", code, link], cwd=self.test_dir, env=env,
+                             capture_output=True, text=True, check=True)
+        templates, home, config = res.stdout.splitlines()
+        self.assertEqual(os.path.realpath(templates), os.path.realpath(os.path.join(REPO_DIR, "templates")))
+        self.assertEqual(home, os.path.join(self.test_dir, "rel-home"))
+        self.assertEqual(config, os.path.join(self.test_dir, "rel.json"))
+
+
+class TestMediumPriorityFixes(unittest.TestCase):
+    """覆盖中优先级整改：统一路由、Codex 端落盘、只读联网开关、since-freeze、快照提速与 .gitignore、子进程附加环境。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.test_dir = os.path.realpath(tmp.name)
+
+    # ---------------------------------------------------------- peer route
+    def test_route_only_reads_task_section(self):
+        """Antigravity 任务说明里“背景与约束”等小节的词不影响判定，只看“# 任务”小节。"""
+        doc = ("# 任务\n审一下登录模块\n\n## 目标\n找出问题\n\n## 背景与约束\n"
+               "【用户原话】之后可能要修改并删除旧代码\n\n## 交付要求\n按严重程度排序\n")
+        kind, quote, hint = peer.route_request(doc)
+        self.assertEqual(kind, "review")
+        self.assertEqual(quote, "审一下登录模块")
+        self.assertEqual(peer.route_request("# 任务\n修复登录超时\n\n## 背景与约束\n只读同事的旧方案\n")[0], "exec")
+
+    def test_route_unified_vocabulary(self):
+        """三端合并后的词表：删除属于修改类，挑刺 / 验收属于审阅类，显式 image 保留。"""
+        cases = {"删除无用的临时脚本": "exec", "挑刺一下这个方案": "review", "验收这次修复": "review",
+                 "image 画一张架构图": "image", "画一张流程图": "image", "": "review"}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(peer.route_request("# 任务\n%s\n" % text)[0], expected)
+
+    def test_route_questions_never_writable(self):
+        """提问和要讲解的句子即使含修改类词也只读；明确的修改指令和显式 exec 仍可写。"""
+        cases = {
+            "这个函数的实现对吗": "advice", "解释一下这段代码的实现": "advice", "修复了什么": "advice",
+            "创建者是谁": "advice", "帮我新建一个分支的思路": "plan", "能帮我修复这个 bug 吗": "advice",
+            "怎么修复这个问题": "advice", "这次重构有没有风险？": "advice", "how should I fix this?": "advice",
+            "修复登录问题": "exec", "实现导出功能": "exec", "这么改一下就行": "exec",
+            "改一下 README，把版本号更新到 0.1.2": "exec", "exec 修复这个 bug 吗": "exec",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                kind, quote, hint = peer.route_request("# 任务\n%s\n" % text)
+                self.assertEqual(kind, expected)
+                if expected not in ("exec", "image") and any(w in text for w in peer.ROUTE_EDIT_WORDS):
+                    self.assertIn("exec 开头", hint)
+
+    def test_write_prompt_does_not_claim_authorization(self):
+        """可写提示词只转述原话，不替用户声明“已明确授权 / 视为已批准”，并要求原话不明确时不改文件。"""
+        for kind in ("exec", "image"):
+            with self.subTest(kind=kind):
+                p = peer.build_prompt("codex", kind, "r.md", "这个实现对吗", root=self.test_dir)
+                self.assertNotIn("明确授权", p)
+                self.assertNotIn("视为已批准", p)
+                self.assertIn("调用方转述的用户原话：「这个实现对吗」", p)
+                self.assertIn("不判断授权范围", p)
+                self.assertIn("不要", p)
+
+    def test_route_cli_outputs_json_and_hint(self):
+        req = os.path.join(self.test_dir, "r.md")
+        with open(req, "w", encoding="utf-8") as f:
+            f.write("# 任务\nexec 不要修改文件\n")
+        res = subprocess.run([sys.executable, peer_bin_path, "route", "--request", req],
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout), {"kind": "review", "quote": "exec 不要修改文件"})
+        self.assertIn("已按只读处理", res.stderr)
+
+    def test_skills_use_peer_route(self):
+        """三端技能都改用 peer route，不再各自内嵌一套关键词规则。"""
+        for agent, target in (("claude", "codex"), ("codex", "claude"),
+                              ("antigravity", "claude"), ("antigravity", "codex")):
+            with self.subTest(skill="%s/%s" % (agent, target)):
+                with open(os.path.join(REPO_DIR, "skills", agent, target, "SKILL.md"), encoding="utf-8") as f:
+                    content = f.read()
+                self.assertIn("route", content)
+                self.assertNotIn("edit_words", content)
+                self.assertNotIn("def route_kind", content)
+
+    # ---------------------------------------------------------- Codex 端 /claude 技能落盘
+    def codex_skill_script(self):
+        with open(os.path.join(REPO_DIR, "skills", "codex", "claude", "SKILL.md"), encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn("task_prompt", content, "用户原文不得写进脚本源码")
+        return re.search(r"```python\n(.*?)\n```", content, re.S).group(1)
+
+    def test_codex_skill_hostile_text_never_enters_script(self):
+        script = self.codex_skill_script()
+        stub_bin = os.path.join(self.test_dir, "stubbin")
+        os.makedirs(stub_bin)
+        log = os.path.join(self.test_dir, "calls.log")
+        with open(os.path.join(stub_bin, "peer"), "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\n[ "$1" = route ] && exec "%s" "%s" "$@"\n'
+                    'printf "%%s\\n" "$@" >> "$PEER_STUB_LOG"\n'
+                    '[ "$1" = ask ] && echo "运行编号：RUN-1"\nexit 0\n' % (sys.executable, peer_bin_path))
+        os.chmod(os.path.join(stub_bin, "peer"), 0o755)
+        env = {"HOME": self.test_dir, "PATH": stub_bin + ":/usr/bin:/bin", "PEER_STUB_LOG": log}
+        marker = os.path.join(self.test_dir, "pwned")
+        hostile = ('修复登录 bug """ \'\'\' \\" \\\\ \n__import__("os").system("touch %s")\n"); open("%s","w")#'
+                   % (marker, marker))
+        workdir = os.path.join(self.test_dir, "proj")
+        req_dir = os.path.join(workdir, ".peer-review", "requests")
+        os.makedirs(req_dir)
+        req = os.path.join(req_dir, "20261102-120000-a1b2c3-codex-claude.md")
+        with open(req, "w", encoding="utf-8") as f:
+            f.write("# 任务\n" + hostile + "\n")
+        code = script.replace("__REQ_FILE__", req, 1)
+        res = subprocess.run([sys.executable, "-I", "-c", code], cwd=workdir, env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertFalse(os.path.exists(marker))
+        with open(log, encoding="utf-8") as f:
+            calls = f.read().splitlines()
+        self.assertEqual(calls[:3], ["ask", "claude", "exec"])
+        self.assertIn(req, calls)
+        self.assertIn("--quote", calls)
+        self.assertNotIn("--web", calls)
+
+        # 占位符未替换、路径不在 requests 目录或文件名不合规时拒绝
+        bad = os.path.join(workdir, "x-codex-claude.md")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("# 任务\n审阅\n")
+        for path in ("__REQ_FILE__", bad):
+            with self.subTest(path=path):
+                res = subprocess.run([sys.executable, "-I", "-c", script.replace("__REQ_FILE__", path, 1)],
+                                     cwd=workdir, env=env, capture_output=True, text=True)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("请求文件", res.stderr)
+
+    # ---------------------------------------------------------- 只读联网开关
+    def test_claude_read_web_default_on_and_can_be_disabled(self):
+        """只读 Claude 默认联网；config 设 false 或按次 --no-web 关闭，--web 按次打开；Codex 与可写调用不受影响。"""
+        class A:
+            web = False
+            no_web = False
+        self.assertTrue(peer.DEFAULT_CONFIG["claude_read_web"])
+        on, off = dict(peer.DEFAULT_CONFIG), dict(peer.DEFAULT_CONFIG, claude_read_web=False)
+        self.assertTrue(peer.read_web_enabled(on, "claude", "read", A()))
+        self.assertTrue(peer.read_web_enabled({}, "claude", "read"))
+        self.assertFalse(peer.read_web_enabled(off, "claude", "read", A()))
+        a = A(); a.no_web = True
+        self.assertFalse(peer.read_web_enabled(on, "claude", "read", a))
+        a = A(); a.web = True
+        self.assertTrue(peer.read_web_enabled(off, "claude", "read", a))
+        self.assertFalse(peer.read_web_enabled(on, "codex", "read", A()))
+        self.assertFalse(peer.read_web_enabled(on, "claude", "write", A()))
+        res = subprocess.run([sys.executable, peer_bin_path, "ask", "claude", "review", "--request", "x",
+                              "--cwd", ".", "--web", "--no-web"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 2)  # 两个开关互斥
+
+    def test_claude_read_web_tools_in_args(self):
+        me = {"model": "", "model_pass": False, "effort": "", "effort_pass": False}
+        args = peer.build_args(peer.DEFAULT_CONFIG, "claude", "review", "p", self.test_dir, [], me)
+        tools = args[args.index("--tools") + 1]
+        self.assertNotIn("WebFetch", tools)
+        self.assertNotIn("WebSearch", args[args.index("--allowedTools") + 1])
+        args = peer.build_args(peer.DEFAULT_CONFIG, "claude", "review", "p", self.test_dir, [], me, web=True)
+        self.assertIn("WebFetch", args[args.index("--tools") + 1])
+        self.assertIn("WebSearch", args[args.index("--allowedTools") + 1])
+        self.assertIn("证据缺口", peer.build_prompt("claude", "review", "r.md", ""))
+        self.assertIn("WebSearch", peer.build_prompt("claude", "review", "r.md", "", web=True))
+
+    # ---------------------------------------------------------- since-freeze 方案在桌面
+    def test_since_freeze_plan_on_desktop_without_cwd(self):
+        home = os.path.join(self.test_dir, "home")
+        proj = os.path.join(home, "proj")
+        os.makedirs(os.path.join(home, "Desktop"))
+        os.makedirs(proj)
+        with open(os.path.join(proj, "a.txt"), "w", encoding="utf-8") as f:
+            f.write("v1\n")
+        plan = os.path.join(home, "Desktop", "plan.md")
+        with open(plan, "w", encoding="utf-8") as f:
+            f.write("# plan\n")
+        env = dict(os.environ, HOME=home, PEER_HOME=os.path.join(home, ".peer-review"))
+        res = subprocess.run([sys.executable, peer_bin_path, "freeze", plan, "--cwd", proj],
+                             env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        with open(os.path.join(proj, "a.txt"), "a", encoding="utf-8") as f:
+            f.write("v2\n")
+        res = subprocess.run([sys.executable, peer_bin_path, "since-freeze",
+                              os.path.join(home, "Desktop", "plan_冻结v001.md")],
+                             env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("a.txt", res.stdout)
+
+    # ---------------------------------------------------------- 快照提速与 .gitignore
+    def test_peer_dir_writes_gitignore_once(self):
+        d = peer.peer_dir(self.test_dir)
+        gi = os.path.join(d, ".gitignore")
+        with open(gi, encoding="utf-8") as f:
+            self.assertIn("*", f.read().splitlines())
+        with open(gi, "w", encoding="utf-8") as f:
+            f.write("custom\n")
+        peer.peer_dir(self.test_dir)
+        with open(gi, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "custom\n")
+
+    def test_compare_reuses_hash_for_unchanged_files(self):
+        """对比时大小与修改时间都没变的文件沿用快照指纹，只给变过的文件算指纹。"""
+        proj = os.path.join(self.test_dir, "proj")
+        os.makedirs(proj)
+        for i in range(5):
+            with open(os.path.join(proj, "f%d.txt" % i), "w", encoding="utf-8") as f:
+                f.write("x%d\n" % i)
+        snap = os.path.join(self.test_dir, "snap")
+        peer.snapshot(proj, snap)
+        with open(os.path.join(proj, "f0.txt"), "w", encoding="utf-8") as f:
+            f.write("changed\n")
+        real = peer.sha256_file
+        with patch.object(peer, "sha256_file", side_effect=real) as h:
+            c = peer.compare(snap, proj)
+        self.assertEqual(c["modified"], ["f0.txt"])
+        self.assertEqual(h.call_count, 1)
+        self.assertLessEqual(peer.HASH_MAX, 8 * 1024 * 1024)
+
+    # ---------------------------------------------------------- 子进程附加环境（代理）
+    def test_child_env_extra_from_config(self):
+        cfg = {"child_env": {"HTTPS_PROXY": "http://127.0.0.1:7890", "https_proxy": "http://127.0.0.1:7890",
+                             "ANTHROPIC_API_KEY": "k", "OPENAI_API_KEY": "k", "PEER_DEPTH": "0",
+                             "BAD NAME": "x", "NUM": 1}}
+        ok, bad = peer.child_env_extra(cfg)
+        self.assertEqual(ok, {"HTTPS_PROXY": "http://127.0.0.1:7890", "https_proxy": "http://127.0.0.1:7890"})
+        self.assertEqual(sorted(bad), sorted(["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PEER_DEPTH", "BAD NAME", "NUM"]))
+        env = peer.child_env({"PATH": "/bin", "PEER_DEPTH": "1"}, extra=dict(ok, ANTHROPIC_BASE_URL="x"))
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7890")
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+        self.assertEqual(env["PEER_DEPTH"], "2")
+        self.assertEqual(peer.child_env_extra({})[0], {})
 
 
 if __name__ == "__main__":

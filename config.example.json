@@ -28,5 +28,7 @@
     "write": 60
   },
   "proxy_check": null,
-  "codex_disable_apps": false
+  "codex_disable_apps": false,
+  "claude_read_web": true,
+  "child_env": {}
 }
