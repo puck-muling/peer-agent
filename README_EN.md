@@ -221,6 +221,7 @@ This assumes the first freeze of that document; use the filename printed by the 
 | Login-category check (`approved_auth`) | Compares the current category with `approved_auth`; mismatch stops the call with exit code 3; managed via `peer doctor [--approve]` | Does not verify authorization scope, remaining credit, or final charges. Subscription calls consume quota; API logins follow their billing rules |
 | Read-only tasks | Sets Codex's `read-only` sandbox; restricts Claude tools and Bash sandbox permissions, with WebSearch / WebFetch allowed by default for research (turn off with `claude_read_web: false` or `--no-web`); requests read-only behavior in the prompt | Depends on the target CLI and system sandbox. PeerAgent still writes task files and logs; the machine is not entirely write-free |
 | Write authorization | Requires a nonempty quote for `exec` / `image` and uses write settings | A quote does not mean the program understands its scope; people and the executor must check it |
+| Write sandbox | Codex uses the `workspace-write` sandbox; Claude's Bash is sandboxed by default (writes only to the project, `--add-dir` directories and `$TMPDIR`, no network), and Edit / Write are auto-approved only inside the project and `--add-dir` directories | Tasks that need network access (e.g. installing dependencies) or writes outside the project fail; set `claude_exec_sandbox: false` to run without the sandbox after weighing the risk |
 | Pre-run snapshot | Copies eligible text content, records file information, and compares afterward | Skips some directories and suspected secrets; size, binary, and total-copy limits apply. Not a full backup or automatic rollback |
 | Recursion marker | Inherited `PEER_DEPTH` causes nested `peer ask` calls to exit with code 2 | Covers this entry point with its marker intact, not every possible agent loop |
 | STOP circuit breaker (`STOP`) | Blocks later calls on a channel after detecting fatal ban or region errors; managed via `peer doctor` and manual killswitch / reset | Depends on error matching and cannot guarantee account protection. Investigate manually; AI agents are strictly forbidden from removing STOP files |
@@ -322,7 +323,8 @@ Default config: `~/.peer-review/config.json`. Use `PEER_CONFIG` for another path
   "proxy_check": null,
   "codex_disable_apps": false,
   "claude_read_web": true,
-  "child_env": {}
+  "child_env": {},
+  "claude_exec_sandbox": true
 }
 ```
 
@@ -340,6 +342,7 @@ Default config: `~/.peer-review/config.json`. Use `PEER_CONFIG` for another path
 | `codex_disable_apps` | Pass a setting to disable Codex Apps; default `false`, separately disabled for image tasks |
 | `claude_read_web` | Whether read-only Claude calls get WebSearch / WebFetch; default `true`. ⚠️ When reviewing external or untrusted code, or projects containing secrets, prompt injection in the reviewed material could use web tools to send out what the model has read; set it to `false` if you do not need web access, or pass `peer ask --no-web` per call. `peer doctor` shows the current setting |
 | `child_env` | Extra environment variables for the Claude / Codex child processes, e.g. `{"HTTPS_PROXY": "http://127.0.0.1:7890"}`. peer runs the CLI binaries directly, bypassing shell functions or aliases, and apps launched from the desktop may not inherit terminal proxies. Billing-related variables (`ANTHROPIC_*`, `OPENAI_API_KEY`, ...) are refused. `peer doctor` shows names only |
+| `claude_exec_sandbox` | Whether Claude's Bash runs in the sandbox for write calls; default `true` (writes only to the project, `--add-dir` directories and `$TMPDIR`, no network — same as Codex). `false` runs without the sandbox, and `peer doctor` warns about it |
 
 To fix effort at high while retaining model inheritance, merge this fragment:
 
@@ -365,7 +368,7 @@ If intentionally switching to an official API login, complete and confirm it in 
 
 | Component | Path and description |
 | :--- | :--- |
-| Core coordinator | [`bin/peer`](./bin/peer), currently 2,516 lines, Python standard library only, no persistent daemon |
+| Core coordinator | [`bin/peer`](./bin/peer), currently 2,541 lines, Python standard library only, no persistent daemon |
 | CLI adaptation skills | [`skills/`](./skills/), for Claude Code, Codex, and Antigravity; not official vendor products |
 | Task templates | [`templates/`](./templates/), 5 files: `review.md`, `plan.md`, `advice.md`, `exec.md`, `image.md` |
 | Installer | [`install.sh`](./install.sh), file copies by default; symlinks are opt-in |

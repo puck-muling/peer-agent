@@ -138,6 +138,9 @@ DEFAULT_CONFIG = {
     # 附加给 Claude / Codex 子进程的环境变量（如代理 HTTPS_PROXY）。peer 直接调用 CLI 程序，不经过 shell 里的同名函数或别名，
     # 从桌面 App 发起时也未必继承终端里的代理，需要固定代理时写在这里；计费相关变量（ANTHROPIC_*、OPENAI_API_KEY 等）一律不接受
     "child_env": {},
+    # 可写调用（exec）时 Claude 的 Bash 是否在沙箱里跑：只能写项目目录、--add-dir 目录和 $TMPDIR，不能联网，
+    # 与 Codex 的 workspace-write 一致。需要联网装依赖等、确认风险后可改为 false（恢复不加沙箱）
+    "claude_exec_sandbox": True,
 }
 
 # 快照设置
@@ -724,7 +727,7 @@ def describe_me(me, agent=None):
 
 
 # ---------------------------------------------------------------- 组装调用
-def build_prompt(agent, kind, rel_request, quote, root="", caller="", web=False):
+def build_prompt(agent, kind, rel_request, quote, root="", caller="", web=False, sandboxed=False):
     name = AGENT_NAMES[agent]
     caller_str = caller or os.environ.get("PEER_CALLER") or "主会话"
     kind_cn, mode = KINDS[kind]
@@ -757,13 +760,17 @@ def build_prompt(agent, kind, rel_request, quote, root="", caller="", web=False)
                 "生图特别约束：请严格在项目根目录下操作，仅使用内置生图工具生成所要求的单张图片并保存至目标路径；"
                 "严禁遍历或搜索工作区其他无关文件，严禁自我多轮重复重绘，生成并保存后立即按末尾回复格式用中文汇报。"
                 % (name, caller_str, quote, rel_request, root_info))
-    return ("你是作为对等协作模型被调用的 %s（调用方：%s），本次任务类型：%s（可写）。"
-            "调用方转述的用户原话：「%s」（peer 只核对原话非空，不判断授权范围）。"
-            "本次无法与用户交互确认：只做原话和任务说明明确要求的改动；原话只是提问、要讲解，"
-            "或没有明确要求修改、与任务说明不一致时，不要改任何文件，直接回答并说明情况。"
-            "请先完整阅读任务说明文件 %s。只在当前项目目录内做与任务相关的改动；"
-            "不要做删除数据、发布、付费等任务说明以外的操作。完成后严格按文件末尾的“回复格式”用中文汇报。"
-            % (name, caller_str, kind_cn, quote, rel_request))
+    prompt = ("你是作为对等协作模型被调用的 %s（调用方：%s），本次任务类型：%s（可写）。"
+              "调用方转述的用户原话：「%s」（peer 只核对原话非空，不判断授权范围）。"
+              "本次无法与用户交互确认：只做原话和任务说明明确要求的改动；原话只是提问、要讲解，"
+              "或没有明确要求修改、与任务说明不一致时，不要改任何文件，直接回答并说明情况。"
+              "请先完整阅读任务说明文件 %s。只在当前项目目录内做与任务相关的改动；"
+              "不要做删除数据、发布、付费等任务说明以外的操作。完成后严格按文件末尾的“回复格式”用中文汇报。"
+              % (name, caller_str, kind_cn, quote, rel_request))
+    if sandboxed:
+        prompt += ("\n运行环境：Bash 在沙箱中运行，只能写项目目录、附加目录和 $TMPDIR，不能联网。"
+                   "遇到需要联网（如安装依赖）或写项目以外位置的操作，不要设法绕过，在“偏离与遗留问题”里说明。")
+    return prompt
 
 
 def claude_sandbox_weakeners(root, env=None):
@@ -787,6 +794,16 @@ def claude_sandbox_weakeners(root, env=None):
     return found
 
 
+def claude_sandbox_settings():
+    """Claude Bash 沙箱：沙箱不可用时直接失败，不允许退回沙箱外执行，Bash 不能联网。"""
+    return {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+            "failIfUnavailable": True, "network": {"allowedDomains": [], "strictAllowlist": True}}
+
+
+def claude_uses_sandbox(cfg, mode):
+    return mode == "read" or cfg.get("claude_exec_sandbox", True) is not False
+
+
 def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None, web=False):
     mode = KINDS[kind][1]
     b = agent_bin(cfg, agent)
@@ -799,18 +816,20 @@ def build_args(cfg, agent, kind, prompt, run_dir, add_dirs, me, iso_work=None, w
             # 联网工具 WebSearch / WebFetch 只在 web=True 时加入（见 read_web_enabled，默认开放）。add_dirs 均为绝对路径，"//" 前缀是 Claude 权限规则里的绝对路径写法
             # （单个 "/" 表示相对设置文件）；Edit 规则同时约束 Write 等所有改文件工具，--tools 里也没有 Edit/Write
             deny = ["Edit(~/**)", "Edit(./**)"] + ["Edit(/%s/**)" % d.rstrip("/") for d in add_dirs]
-            settings = {"disableAllHooks": True,
-                        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
-                                    "failIfUnavailable": True,
-                                    "network": {"allowedDomains": [], "strictAllowlist": True}},
+            settings = {"disableAllHooks": True, "sandbox": claude_sandbox_settings(),
                         "permissions": {"deny": deny}}
             net = ",WebSearch,WebFetch" if web else ""
             args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Skill,Bash" + net,
                     "--allowedTools", "Skill,Bash" + net]
         else:
             settings = {"disableAllHooks": True}
+            if cfg.get("claude_exec_sandbox", True) is not False:
+                # 可写：Bash 同样进沙箱。沙箱默认只放行当前目录（项目）、--add-dir 目录和 $TMPDIR 的写入，网络白名单为空
+                settings["sandbox"] = claude_sandbox_settings()
+            # Edit / Write 不放进 --allowedTools：不带范围的放行会让它们写到任意位置（实测可写项目外）。
+            # 交给 acceptEdits 只自动放行项目和 --add-dir 目录内的改动，其他位置需要授权，无头调用下即被拒绝
             args = [b, "-p", prompt, "--tools", "Read,Grep,Glob,Edit,Write,Bash,Skill",
-                    "--allowedTools", "Edit,Write,Bash,Skill", "--permission-mode", "acceptEdits"]
+                    "--allowedTools", "Bash,Skill", "--permission-mode", "acceptEdits"]
         args += ["--disallowedTools", "mcp__*", "--strict-mcp-config",
                  "--settings", json.dumps(settings, ensure_ascii=False),
                  "--no-session-persistence", "--max-turns", str(cfg["max_turns"][mode]),
@@ -1429,10 +1448,10 @@ def cmd_ask(a, env=None):
     b = agent_bin(cfg, agent)
     if not (os.path.isfile(b) and os.access(b, os.X_OK)):
         die("找不到 %s 命令：%s。请先安装并登录，再运行 peer doctor。" % (AGENT_NAMES[agent], b))
-    if agent == "claude" and mode == "read":
+    if agent == "claude" and claude_uses_sandbox(cfg, mode):
         weak = claude_sandbox_weakeners(root)
         if weak:
-            die("Claude 的已有设置会放宽只读调用的沙箱，已停止调用，没有产生任何请求：\n  - %s\n"
+            die("Claude 的已有设置会放宽本次调用的沙箱，已停止调用，没有产生任何请求：\n  - %s\n"
                 "请由用户本人移除这些设置（或改用 Codex）后再试。" % "\n  - ".join(weak), 3)
     try:
         me = resolve_model_effort(cfg, agent, (a.model or "").strip(), (a.effort or "").strip(), (getattr(a, "service_tier", "") or "").strip())
@@ -1494,7 +1513,9 @@ def cmd_ask(a, env=None):
         snap_info = {"files": len(m["entries"]), "copied_bytes": m["copied_bytes"], "not_copied": m["not_copied"]}
 
     web = read_web_enabled(cfg, agent, mode, a)
-    prompt = build_prompt(agent, kind, rel_request, quote, root=root, caller=getattr(a, "caller", ""), web=web)
+    sandboxed = agent == "claude" and mode == "write" and claude_uses_sandbox(cfg, mode)
+    prompt = build_prompt(agent, kind, rel_request, quote, root=root, caller=getattr(a, "caller", ""), web=web,
+                          sandboxed=sandboxed)
     args = build_args(cfg, agent, kind, prompt, rdir, add_dirs, me, iso_work=iso_work, web=web)
     timeout_mins = 10 if kind == "image" else cfg["timeout_minutes"][mode]
     meta = {"run_id": run_id, "agent": agent, "kind": kind, "mode": mode, "root": root,
@@ -2362,6 +2383,10 @@ def cmd_doctor(a):
         print("- 子进程附加环境变量（config.json 的 child_env）：%s" % "、".join(sorted(extra_ok)))
     if extra_bad:
         print("- ⚠️ child_env 中以下项未生效（计费或内部变量、名字不合法或值不是字符串）：%s" % "、".join(sorted(extra_bad)))
+    if cfg.get("claude_exec_sandbox", True) is not False:
+        print("- Claude 可写调用的 Bash 沙箱：开启（只能写项目、--add-dir 目录和 $TMPDIR，不能联网）")
+    else:
+        print("- ⚠️ Claude 可写调用的 Bash 沙箱：关闭（config.json 的 claude_exec_sandbox 为 false，Bash 可写任意位置、可联网）")
     if cfg.get("claude_read_web", True) is not False:
         print("- 只读调用 Claude 联网查资料：开启（默认）。审阅外部或不可信代码、项目里有密钥时，被审内容可能诱导模型借联网"
               "外传读到的内容；不需要联网可在 config.json 设 \"claude_read_web\": false，或按次加 --no-web")

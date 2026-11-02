@@ -1770,6 +1770,59 @@ class TestMediumPriorityFixes(unittest.TestCase):
                 self.assertIn("不判断授权范围", p)
                 self.assertIn("不要", p)
 
+    def test_claude_exec_bash_sandboxed_by_default(self):
+        """可写调用的 Claude Bash 默认进沙箱（不可退回沙箱外、不能联网）；claude_exec_sandbox=false 时恢复不加沙箱。"""
+        me = {"model": "", "model_pass": False, "effort": "", "effort_pass": False}
+        self.assertTrue(peer.DEFAULT_CONFIG["claude_exec_sandbox"])
+        args = peer.build_args(peer.DEFAULT_CONFIG, "claude", "exec", "p", self.test_dir, [], me)
+        sb = json.loads(args[args.index("--settings") + 1])["sandbox"]
+        self.assertTrue(sb["enabled"])
+        self.assertFalse(sb["allowUnsandboxedCommands"])
+        self.assertTrue(sb["failIfUnavailable"])
+        self.assertEqual(sb["network"]["allowedDomains"], [])
+        allowed = args[args.index("--allowedTools") + 1].split(",")
+        self.assertIn("Bash", allowed)
+        # 不带范围的 Edit / Write 放行会让写入越出项目，必须交给 acceptEdits 按工作目录放行
+        self.assertNotIn("Edit", allowed)
+        self.assertNotIn("Write", allowed)
+        self.assertEqual(args[args.index("--permission-mode") + 1], "acceptEdits")
+        off = dict(peer.DEFAULT_CONFIG, claude_exec_sandbox=False)
+        args = peer.build_args(off, "claude", "exec", "p", self.test_dir, [], me)
+        self.assertNotIn("sandbox", json.loads(args[args.index("--settings") + 1]))
+        self.assertTrue(peer.claude_uses_sandbox(off, "read"))
+        self.assertFalse(peer.claude_uses_sandbox(off, "write"))
+        self.assertIn("沙箱", peer.build_prompt("claude", "exec", "r.md", "改一下", sandboxed=True))
+        self.assertNotIn("沙箱", peer.build_prompt("claude", "exec", "r.md", "改一下"))
+
+    def test_claude_exec_refuses_weakened_sandbox(self):
+        """可写调用也启用沙箱后，同样在发请求前拒绝会放宽沙箱的已有设置。"""
+        cfg_dir = os.path.join(self.test_dir, "claude-cfg")
+        proj = os.path.join(self.test_dir, "proj")
+        os.makedirs(cfg_dir)
+        os.makedirs(proj)
+        with open(os.path.join(cfg_dir, "settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"sandbox": {"excludedCommands": ["git"]}}, f)
+        stub = os.path.join(self.test_dir, "claude")
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(stub, 0o755)
+        req = os.path.join(self.test_dir, "req.md")
+        with open(req, "w", encoding="utf-8") as f:
+            f.write("# 任务\n修复登录\n")
+        cfg = dict(peer.DEFAULT_CONFIG, bins={"claude": stub, "codex": stub})
+
+        class Args:
+            agent, kind, cwd, quote, request = "claude", "exec", proj, "修复登录", req
+            add_dir, model, effort, service_tier, caller = [], "", "", "", "test"
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg_dir}), \
+             patch.object(peer, "check_circuit_breaker"), \
+             patch.object(peer, "load_config", return_value=cfg), \
+             patch.object(peer, "auth_state", side_effect=AssertionError("不应探测登录")), \
+             redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                peer.cmd_ask(Args, env={})
+        self.assertEqual(cm.exception.code, 3)
+
     def test_route_cli_outputs_json_and_hint(self):
         req = os.path.join(self.test_dir, "r.md")
         with open(req, "w", encoding="utf-8") as f:

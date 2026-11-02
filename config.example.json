@@ -30,5 +30,6 @@
   "proxy_check": null,
   "codex_disable_apps": false,
   "claude_read_web": true,
-  "child_env": {}
+  "child_env": {},
+  "claude_exec_sandbox": true
 }

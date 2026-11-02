@@ -221,6 +221,7 @@ peer since-freeze ./方案-v2_冻结v001.md
 | 登录类别检查 (`approved_auth`) | 调用前比较当前类别与 `approved_auth`，不一致时停止，退出码 3；配套工具为 `peer doctor [--approve]` | 不能验证授权范围、可用余额或最终账单。支持已有 CLI 订阅登录，仍消耗额度；API 登录按相应规则计费 |
 | 只读任务 | 给 Codex 设置 `read-only` 沙箱；给 Claude 限制工具和 Bash 沙箱权限，默认开放 WebSearch / WebFetch 便于查资料（可用 `claude_read_web: false` 或 `--no-web` 关闭），并在任务说明中要求只读 | 依赖目标 CLI 与系统沙箱实现；PeerAgent 仍会写入任务、日志等过程文件，不代表整台机器不写文件 |
 | 可写授权 | `exec` / `image` 要求非空授权引文，使用可写配置 | 引文存在不等于程序理解了授权；实施范围仍需人和执行方核对 |
+| 可写沙箱 | Codex 用 `workspace-write` 沙箱；Claude 的 Bash 默认进沙箱（只能写项目、`--add-dir` 目录和 `$TMPDIR`，不能联网），Edit / Write 只自动放行项目和 `--add-dir` 目录内的改动 | 需要联网（如安装依赖）或写项目外的任务会失败；确认风险后可设 `claude_exec_sandbox: false` 恢复不加沙箱 |
 | 改前快照 | 保存可复制的文本内容并记录文件信息，改后对比 | 跳过部分目录和疑似敏感内容；大文件、二进制与总量等有限制，不是完整备份或自动回滚 |
 | 防递归标记 | 子进程继承 `PEER_DEPTH` 后，嵌套 `peer ask` 被拒绝，退出码 2 | 只覆盖经过该入口且保留标记的调用，不能阻止所有可能的模型循环 |
 | STOP 熔断锁 (`STOP`) | 检测到特定封禁或地区错误后，写入停机锁文件阻止该渠道后续调用；配套工具为 `peer doctor` 诊断与手动急停/复位 | 依赖错误匹配，不能保证避免封号；需人工排查，严禁 Agent 自动删除 STOP 文件 |
@@ -322,7 +323,8 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
   "proxy_check": null,
   "codex_disable_apps": false,
   "claude_read_web": true,
-  "child_env": {}
+  "child_env": {},
+  "claude_exec_sandbox": true
 }
 ```
 
@@ -340,6 +342,7 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 | `codex_disable_apps` | 传参禁用 Codex Apps；默认 `false`，生图任务会单独禁用 |
 | `claude_read_web` | 只读调用是否给 Claude 开放 WebSearch / WebFetch；默认 `true`。⚠️ 审阅外部或不可信代码、项目里有密钥时，被审内容里的提示注入可能诱导模型借联网工具外传读到的内容；不需要联网时建议设为 `false`，或按次加 `peer ask --no-web`。`peer doctor` 会显示当前状态 |
 | `child_env` | 附加给 Claude / Codex 子进程的环境变量，如 `{"HTTPS_PROXY": "http://127.0.0.1:7890"}`。peer 直接调用 CLI 程序，不经过 shell 里的同名函数或别名，从桌面 App 发起时也未必继承终端代理；计费相关变量（`ANTHROPIC_*`、`OPENAI_API_KEY` 等）不接受。`peer doctor` 只显示变量名 |
+| `claude_exec_sandbox` | 可写调用时 Claude 的 Bash 是否进沙箱；默认 `true`（只能写项目、`--add-dir` 目录和 `$TMPDIR`，不能联网，与 Codex 一致）。设为 `false` 恢复不加沙箱，`peer doctor` 会给出提醒 |
 
 如果只想固定高强度、继续跟随模型设置，可合并下面的配置片段：
 
@@ -365,7 +368,7 @@ CLI 安装包下载与模型服务访问是两条链路。安装成功不代表�
 
 | 组成 | 路径与说明 |
 | :--- | :--- |
-| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,516 行，仅用 Python 标准库，无常驻守护进程 |
+| 核心调度器 | [`bin/peer`](./bin/peer)，当前版本 2,541 行，仅用 Python 标准库，无常驻守护进程 |
 | CLI 适配技能 | [`skills/`](./skills/)，适配 Claude Code、Codex 与 Antigravity，非这些厂商官方出品 |
 | 任务模板 | [`templates/`](./templates/)，共 5 份：`review.md`、`plan.md`、`advice.md`、`exec.md`、`image.md` |
 | 安装器 | [`install.sh`](./install.sh)，默认文件复制，可显式选择软链接 |
