@@ -1868,6 +1868,26 @@ class TestMediumPriorityFixes(unittest.TestCase):
                 self.assertNotIn("edit_words", content)
                 self.assertNotIn("def route_kind", content)
 
+    def test_skills_pass_caller_context(self):
+        """被调方看不到调用方对话：四个技能都要求在“# 任务”之后补写背景小节，且这些标题都是 route 的停止小节。"""
+        heads = ("目标", "原始需求与证据", "需要阅读的文件", "背景与约束")
+        for h in heads:
+            self.assertIn(h, peer.ROUTE_STOP_SECTIONS)
+        for agent, target in (("claude", "codex"), ("codex", "claude"),
+                              ("antigravity", "claude"), ("antigravity", "codex")):
+            with self.subTest(skill="%s/%s" % (agent, target)):
+                with open(os.path.join(REPO_DIR, "skills", agent, target, "SKILL.md"), encoding="utf-8") as f:
+                    content = f.read()
+                for h in heads:
+                    self.assertIn("## " + h, content)
+
+    def test_route_ignores_caller_context(self):
+        """只有指代词的原话（如“你的建议”）补上背景后，背景里的修改 / 生图字样不改变判定与授权原话。"""
+        doc = ("# 任务\n你的建议\n\n## 目标\n评发布文案\n\n## 原始需求与证据\n- 之前要求修改并生成图片\n\n"
+               "## 需要阅读的文件\n- /tmp/a.md\n\n## 背景与约束\n- 【用户原话】可以直接改文件\n")
+        kind, quote, _ = peer.route_request(doc)
+        self.assertEqual((kind, quote), ("advice", "你的建议"))
+
     # ---------------------------------------------------------- Codex 端 /claude 技能落盘
     def codex_skill_script(self):
         with open(os.path.join(REPO_DIR, "skills", "codex", "claude", "SKILL.md"), encoding="utf-8") as f:

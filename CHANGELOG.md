@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.6] - 2026-11-03
+
+### Fixed
+- **`/codex` and `/claude` sent only the user's words, so short requests like "your advice" reached the other agent with nothing to work on (`skills/claude/codex`, `skills/codex/claude`)**: the called agent is a separate process and cannot see the caller's conversation. Both skills now keep the user's words verbatim under `# 任务` (still the only part `peer route` reads for type and authorization) and have the caller add `## 目标`, `## 原始需求与证据`, `## 需要阅读的文件` and `## 背景与约束` after it when the words depend on the conversation, the same sections the Antigravity skills already used. Each background item is labelled as the user's words, a verified fact with evidence, or an inference; the added text may not widen authorization; when the target cannot be identified the caller asks the user instead of calling. Tests check that all four skills carry these sections and that background mentioning edits or images does not change routing. Found when `/codex 你的建议` returned "no subject to review"; with the fix the same words produced a full review.
+- **Installer messages could break on multibyte punctuation, and `--version 0.1.3` was rejected (`bootstrap.sh`, `install.sh`)**: shell variables directly followed by full-width punctuation are now braced, and versions without the `v` prefix are accepted.
+
 ## [0.1.5] - 2026-11-02
 
 ### Changed
